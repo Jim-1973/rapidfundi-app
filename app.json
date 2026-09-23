@@ -19,6 +19,7 @@
     "android": {
       "package": "com.rapidfundi.app",
       "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
       "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "CAMERA"]
@@ -31,6 +32,11 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "bfc9540d-137c-4d51-be13-f45c6a700a19"
+      }
     }
   }
 }
