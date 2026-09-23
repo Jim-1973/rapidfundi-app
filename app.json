@@ -1,25 +1,36 @@
 {
   "expo": {
-    "name": "rapidfundi-app",
+    "name": "RapidFundi",
     "slug": "rapidfundi-app",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "scheme": "rapidfundi",
     "userInterfaceStyle": "light",
+    "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.rapidfundi.app",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RapidFundi uses your location to find nearby plumbers.",
+        "NSCameraUsageDescription": "RapidFundi needs camera to upload job photos.",
+        "NSPhotoLibraryUsageDescription": "RapidFundi needs photo library to upload job photos."
+      }
     },
     "android": {
+      "package": "com.rapidfundi.app",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#ffffff"
       },
-      "predictiveBackGestureEnabled": false
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "CAMERA"]
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }
