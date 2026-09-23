@@ -1,74 +1,72 @@
 import { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ScrollView } from 'react-native';
-import { Link } from 'expo-router';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
+import { supabase } from '../../lib/supabase';
+import { useLocalSearchParams } from 'expo-router';
 
 export default function ProofOfWork() {
-  const [otp, setOtp] = useState('');
-  const jobOtp = '847392'; // from customer request
+  const { jobId } = useLocalSearchParams();
+  const [loading, setLoading] = useState(false);
+  const [gps, setGps] = useState<{latitude: number, longitude: number} | null>(null);
 
-  const handleComplete = () => {
-    if (otp !== jobOtp) {
-      Alert.alert('Invalid OTP', `Customer OTP is ${jobOtp}. You entered ${otp}`);
-      return;
+  const captureGPS = async () => {
+    // MOCK GPS for pilot - real expo-location we install later
+    // Buruburu coordinates
+    const mockCoords = { latitude: -1.28, longitude: 36.82 };
+    setGps(mockCoords);
+    Alert.alert('GPS Captured (Pilot Mode)', `${mockCoords.latitude}, ${mockCoords.longitude}`);
+  };
+
+  const submitProof = async () => {
+    if (!gps) return Alert.alert('Capture GPS first', 'Tap the GPS card');
+    setLoading(true);
+    try {
+      const { error } = await supabase.from('job_proofs').insert({
+        job_id: jobId || 'RF-1024',
+        gps_lat: gps.latitude,
+        gps_lng: gps.longitude,
+        video_url: 'pilot-video-RF-1024.mp4'
+      });
+      if (error) throw error;
+      Alert.alert('Proof Submitted! ✅', `Admin will see ${jobId || 'RF-1024'} as PROOF_SUBMITTED`);
+    } catch (e: any) {
+      Alert.alert('Supabase Error', e.message + '\n\nDid you create table job_proofs?');
+    } finally {
+      setLoading(false);
     }
-    Alert.alert('Job Completed!', '✅ Video + Geotagged photo + OTP verified\nEscrow will release after 24h');
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ padding: 20 }}>
-      <Text style={styles.title}>Proof of Work</Text>
-      <Text style={styles.sub}>Job #RF-1024 - Buruburu - Leak Repair</Text>
+    <View style={styles.container}>
+      <Text style={styles.title}>LIVE Proof - {jobId || 'RF-1024'}</Text>
+      <Text style={styles.sub}>Buruburu - Leak Repair</Text>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Step 1: Video Evidence (Mock)</Text>
-        <View style={styles.uploadBox}>
-          <Text>🎥 Upload 15s repair video</Text>
-          <Text style={styles.small}>Must show leak fixed</Text>
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Step 2: Geotagged Photo</Text>
-        <View style={styles.uploadBox}>
-          <Text>📸 Take geotagged photo</Text>
-          <Text style={styles.small}>GPS: -1.28, 36.82 (auto) | Time watermark</Text>
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Step 3: Customer OTP</Text>
-        <Text style={styles.small}>Ask customer for 6-digit OTP from their app</Text>
-        <TextInput 
-          style={styles.otpInput} 
-          placeholder="Enter 847392" 
-          value={otp} 
-          onChangeText={setOtp}
-          keyboardType="number-pad"
-          maxLength={6}
-        />
-        <Text style={styles.hint}>Hint for demo: OTP is {jobOtp}</Text>
-      </View>
-
-      <TouchableOpacity style={styles.btn} onPress={handleComplete}>
-        <Text style={styles.btnText}>Complete Job - Submit Proof</Text>
+      <TouchableOpacity style={styles.card} onPress={captureGPS}>
+        <Text style={styles.cardText}>
+          📍 {gps ? `GPS: ${gps.latitude.toFixed(4)}, ${gps.longitude.toFixed(4)}` : 'Tap to Capture GPS (Pilot)'}
+        </Text>
       </TouchableOpacity>
 
-      <Link href="/" style={styles.link}>← Back to Home</Link>
-    </ScrollView>
+      <View style={styles.card}>
+        <Text>🎥 Video: pilot-video-RF-1024.mp4 (mock for now)</Text>
+      </View>
+
+      <TouchableOpacity 
+        style={[styles.btn, {backgroundColor: gps ? '#00C851' : '#ccc'}]} 
+        onPress={submitProof} 
+        disabled={loading || !gps}
+      >
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Submit LIVE Proof to Supabase</Text>}
+      </TouchableOpacity>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
-  title: { fontSize: 24, fontWeight: 'bold' },
-  sub: { color: '#666', marginBottom: 20 },
-  card: { backgroundColor: '#f8f9ff', padding: 15, borderRadius: 12, marginBottom: 15 },
-  cardTitle: { fontWeight: '700', marginBottom: 10 },
-  uploadBox: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#ddd', borderStyle: 'dashed', borderRadius: 8, padding: 20, alignItems: 'center' },
-  small: { color: '#666', fontSize: 12, marginTop: 5 },
-  otpInput: { borderWidth: 2, borderColor: '#007AFF', borderRadius: 8, padding: 15, fontSize: 24, textAlign: 'center', letterSpacing: 10, marginTop: 10, backgroundColor: '#fff' },
-  hint: { color: '#007AFF', fontSize: 11, marginTop: 5, textAlign: 'center' },
-  btn: { backgroundColor: '#00C851', padding: 16, borderRadius: 10, marginTop: 10, alignItems: 'center' },
-  btnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  link: { marginTop: 20, color: '#007AFF', textAlign: 'center' }
+  container: { flex: 1, padding: 20, backgroundColor: '#fff' },
+  title: { fontSize: 22, fontWeight: 'bold' },
+  sub: { color: '#666', marginBottom: 20, marginTop: 5 },
+  card: { padding: 20, backgroundColor: '#f0f0f0', borderRadius: 12, marginBottom: 15 },
+  cardText: { fontWeight: '600' },
+  btn: { padding: 16, borderRadius: 10, alignItems: 'center', marginTop: 10 },
+  btnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 }
 });
