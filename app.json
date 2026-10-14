@@ -1,54 +1,45 @@
 {
   "expo": {
     "name": "RapidFundi",
-    "slug": "rapidfundi",
+    "slug": "rapidfundi-app",
+    "scheme": "rapidfundi",
     "version": "1.0.0",
     "orientation": "portrait",
-    "scheme": "rapidfundi",
-    "userInterfaceStyle": "light",
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.rapidfundi.app",
-      "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "RapidFundi uses your location to find nearby plumbers.",
-        "NSCameraUsageDescription": "RapidFundi needs camera to upload job photos.",
-        "NSPhotoLibraryUsageDescription": "RapidFundi needs photo library to upload job photos."
-      }
-    },
+    "platforms": ["ios", "android", "web"],
     "android": {
       "package": "com.rapidfundi.app",
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/images/icon.png",
-        "backgroundColor": "#ffffff"
-      },
       "permissions": [
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-        "CAMERA",
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-        "CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
       ]
     },
-    "web": {
-      "bundler": "metro"
-    },
-    "plugins": [
-      "expo-router"
-    ],
-    "experiments": {
-      "typedRoutes": true
-    },
-    "extra": {
-      "eas": {
-        "projectId": "bfc9540d-137c-4d51-be13-f45c6a700a19"
+    "ios": {
+      "bundleIdentifier": "com.rapidfundi.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Allow RapidFundi to use your camera to take photos of jobs",
+        "NSPhotoLibraryUsageDescription": "Allow RapidFundi to access photos"
       }
     },
-    "runtimeVersion": {
-      "policy": "appVersion"
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow RapidFundi to use your camera."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow RapidFundi to access your photos.",
+          "cameraPermission": "Allow RapidFundi to use your camera."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "338767c9-8e70-4613-9408-5159e3e658e3"
+      }
     },
-    "updates": {
-      "url": "https://u.expo.dev/bfc9540d-137c-4d51-be13-f45c6a700a19"
-    }
+    "owner": "devwizzard"
   }
 }
