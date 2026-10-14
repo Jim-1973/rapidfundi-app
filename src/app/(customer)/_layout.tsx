@@ -43,6 +43,9 @@ export default function CustomerLayout() {
         name="my-jobs"
         options={{ title: "My Jobs", tabBarIcon: () => <Text>📋</Text> }}
       />
+      <Tabs.Screen 
+      name="contact"
+      options={{ title: "Contact", tabBarIcon: ({color}) => <Text style={{color}}>☎️</Text> }} />
     </Tabs>
   );
 }
