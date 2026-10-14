@@ -1,5 +1,5 @@
 import { Tabs } from "expo-router";
-import { Text, View, ActivityIndicator, TouchableOpacity, Alert } from "react-native";
+import { Text, View, ActivityIndicator, TouchableOpacity, Alert, Platform } from "react-native";
 import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import { supabase } from "../../../lib/supabase";
@@ -23,13 +23,27 @@ export default function CustomerLayout() {
   }, []);
 
   const logout = async () => {
-    Alert.alert("Logout?", "Are you sure?", [
-      { text: "Cancel", style:"cancel" },
-      { text: "Logout", style:"destructive", onPress: async () => {
+    const doLogout = async () => {
+      try {
         await supabase.auth.signOut();
+      } catch {}
+      setHasSession(false);
+      // Small delay to ensure storage cleared
+      setTimeout(() => {
         router.replace("/login" as any);
-      }}
-    ])
+      }, 100);
+    };
+
+    if (Platform.OS === 'web') {
+      // Alert.alert does NOT work on web - use confirm
+      const ok = window.confirm("Logout? Are you sure you want to logout?");
+      if (ok) await doLogout();
+    } else {
+      Alert.alert("Logout?", "Are you sure?", [
+        { text: "Cancel", style:"cancel" },
+        { text: "Logout", style:"destructive", onPress: doLogout }
+      ]);
+    }
   };
 
   if (checking) {

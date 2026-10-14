@@ -41,10 +41,10 @@ export default function MyJobs(){
       return;
     }
     const { data, error } = await supabase
- .from('jobs')
- .select(`*, quotations(*), plumbers(name, plumber_number, phone, rating)`)
- .eq('customer_id', user.id)
- .order('created_at', {ascending:false});
+.from('jobs')
+.select(`*, quotations(*), plumbers(name, plumber_number, phone, rating)`)
+.eq('customer_id', user.id)
+.order('created_at', {ascending:false});
     if (error) {
       console.log("fetch error", error);
       setLoading(false);
@@ -82,14 +82,16 @@ export default function MyJobs(){
     await supabase.from('jobs').update({status:'DECLINED'}).eq('id', job.id);
     fetchJobs();
   };
-  const openMpesaPay = (job:any) => {
-    const q = job.quotations?.[0];
-    if(!q){ Alert.alert("No quotation"); return; }
-    setPayJob(job);
-    setMpesaPhone("254");
-    setMpesaPin("");
-    setShowPay(true);
-  };
+ const openMpesaPay = async (job:any) => {
+  const q = job.quotations?.[0];
+  if(!q){ Alert.alert("No quotation"); return; }
+  setPayJob(job);
+  const { data: { user } } = await supabase.auth.getUser();
+  const phoneFromMeta = (user?.user_metadata as any)?.phone || "254";
+  setMpesaPhone(phoneFromMeta);
+  setMpesaPin("");
+  setShowPay(true);
+};
   const processMpesaPayment = async () => {
     if(mpesaPin.length < 4){ Alert.alert("Enter MPESA PIN"); return; }
     if(mpesaPhone.length < 12){ Alert.alert("Enter valid MPESA number e.g. 2547..."); return; }
@@ -109,14 +111,14 @@ export default function MyJobs(){
   };
 
   return (
-    <View style={{flex:1, backgroundColor:"white"}}>
-    <ScrollView style={{flex:1}} contentContainerStyle={{padding:20, paddingTop:50, paddingBottom:100}}>
-      <View style={{ flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
-        <View><Text style={{fontSize:26, fontWeight:"900"}}>My Jobs</Text><Text style={{color:"#64748b"}}>Track, verify & pay via MPESA</Text></View>
-        <TouchableOpacity onPress={()=> router.push("/")} style={{ backgroundColor:"#f1f5f9", paddingHorizontal:12, paddingVertical:8, borderRadius:20 }}><Text style={{ fontWeight:"700", fontSize:12 }}>← Request</Text></TouchableOpacity>
-      </View>
+    <View style={{flex:1, backgroundColor:"#f8fafc"}}>
+    <ScrollView style={{flex:1}} contentContainerStyle={{padding:16, paddingTop:12, paddingBottom:30}}>
+
+      {/* FIXED: Removed duplicate My Jobs header - now handled by _layout.tsx */}
+      <Text style={{color:"#64748b", fontSize:12, marginBottom:12}}>Track, verify & pay via MPESA</Text>
+
       {loading && <ActivityIndicator style={{ marginTop:30 }} color="#0ABAB5" />}
-      <View style={{gap:14, marginTop:20}}>
+      <View style={{gap:14}}>
         {jobs.map((job, idx)=>{
           const q = job.quotations?.[0];
           const s = getStatusUI(job.status, job.payment_status);
@@ -125,7 +127,7 @@ export default function MyJobs(){
           const isPaid = job.payment_status === 'PAID';
           const isNewest = idx === 0;
           return (
-            <View key={job.id} style={{backgroundColor:"#f8fafc", padding:16, borderRadius:14, borderWidth: isNewest? 2 : 1, borderColor: isPaid? "#16a34a" : job.status==='EN_ROUTE' || job.status==='ARRIVED' || job.status==='COMPLETED'? s.color : isNewest? "#0ABAB5" : "#e2e8f0"}}>
+            <View key={job.id} style={{backgroundColor:"white", padding:16, borderRadius:14, borderWidth: isNewest? 2 : 1, borderColor: isPaid? "#16a34a" : job.status==='EN_ROUTE' || job.status==='ARRIVED' || job.status==='COMPLETED'? s.color : isNewest? "#0ABAB5" : "#e2e8f0"}}>
               {isNewest && <View style={{flexDirection:"row", alignItems:"center", gap:4, marginBottom:6}}><Ionicons name="ellipse" size={8} color="#0ABAB5" /><Text style={{ fontSize:10, fontWeight:"800", color:"#0ABAB5" }}>LATEST</Text></View>}
               <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
                 <Text style={{fontWeight:"800"}}>{job.job_number}</Text>
@@ -159,7 +161,7 @@ export default function MyJobs(){
                   </View>
                 </View>
               )}
-              {q? (<View style={{backgroundColor:"white", padding:12, borderRadius:10, marginTop:10, borderWidth:1, borderColor:"#e2e8f0"}}><Text style={{fontWeight:"700"}}>{q.quotation_number}: KES {q.total} {isPaid? "• PAID" : ""}</Text><Text style={{fontSize:12, marginTop:4, color:"#475569"}}>Labour {q.labour} + Materials {q.materials} + Fee {q.service_fee}</Text>{q.status==='PENDING' && (<View style={{flexDirection:"row", gap:8, marginTop:10}}><TouchableOpacity onPress={()=>approve(job,q)} style={{flex:1, backgroundColor:"#0ABAB5", padding:12, borderRadius:10, flexDirection:"row", justifyContent:"center", gap:6}}><Ionicons name="checkmark" size={16} color="white" /><Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>APPROVE</Text></TouchableOpacity><TouchableOpacity onPress={()=>decline(q,job)} style={{flex:1, borderWidth:1, borderColor:"#e2e8f0", padding:12, borderRadius:10, flexDirection:"row", justifyContent:"center", gap:6}}><Ionicons name="close" size={16} color="#334155" /><Text style={{textAlign:"center"}}>Decline</Text></TouchableOpacity></View>)}</View>) : <Text style={{marginTop:8, fontSize:12, color:"#94a3b8"}}>Waiting for admin quotation...</Text>}
+              {q? (<View style={{backgroundColor:"#f8fafc", padding:12, borderRadius:10, marginTop:10, borderWidth:1, borderColor:"#e2e8f0"}}><Text style={{fontWeight:"700"}}>{q.quotation_number}: KES {q.total} {isPaid? "• PAID" : ""}</Text><Text style={{fontSize:12, marginTop:4, color:"#475569"}}>Labour {q.labour} + Materials {q.materials} + Fee {q.service_fee}</Text>{q.status==='PENDING' && (<View style={{flexDirection:"row", gap:8, marginTop:10}}><TouchableOpacity onPress={()=>approve(job,q)} style={{flex:1, backgroundColor:"#0ABAB5", padding:12, borderRadius:10, flexDirection:"row", justifyContent:"center", gap:6}}><Ionicons name="checkmark" size={16} color="white" /><Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>APPROVE</Text></TouchableOpacity><TouchableOpacity onPress={()=>decline(q,job)} style={{flex:1, borderWidth:1, borderColor:"#e2e8f0", padding:12, borderRadius:10, flexDirection:"row", justifyContent:"center", gap:6}}><Ionicons name="close" size={16} color="#334155" /><Text style={{textAlign:"center"}}>Decline</Text></TouchableOpacity></View>)}</View>) : <Text style={{marginTop:8, fontSize:12, color:"#94a3b8"}}>Waiting for admin quotation...</Text>}
               {job.status === 'COMPLETED' &&!isPaid && completion && (<TouchableOpacity onPress={()=>confirmWorkDone(job)} style={{backgroundColor:"#0A1931", padding:16, borderRadius:12, marginTop:12, flexDirection:"row", justifyContent:"center", gap:8}}><Ionicons name="card" size={18} color="white" /><Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>Verify & Pay KES {q?.total} via MPESA</Text></TouchableOpacity>)}
               {isPaid && (<View style={{backgroundColor:"#dcfce7", padding:12, borderRadius:10, marginTop:12, flexDirection:"row", justifyContent:"center", gap:6}}><Ionicons name="checkmark-done-circle" size={16} color="#166534" /><Text style={{fontWeight:"800", color:"#166534", textAlign:"center"}}>PAID & COMPLETED</Text></View>)}
             </View>
@@ -170,24 +172,7 @@ export default function MyJobs(){
       <Modal visible={showPay} transparent animationType="slide"><View style={{flex:1, backgroundColor:"rgba(0,0,0,0.5)", justifyContent:"flex-end"}}><View style={{backgroundColor:"white", padding:20, borderTopLeftRadius:20, borderTopRightRadius:20}}><Text style={{fontSize:20, fontWeight:"900"}}>MPESA Payment</Text><Text style={{color:"#64748b", marginTop:4}}>Pay KES {payJob?.quotations?.[0]?.total}</Text><Text style={{fontWeight:"700", marginTop:16}}>MPESA Phone</Text><TextInput value={mpesaPhone} onChangeText={setMpesaPhone} keyboardType="phone-pad" style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:10, padding:12, marginTop:6}}/><Text style={{fontWeight:"700", marginTop:12}}>MPESA PIN</Text><TextInput value={mpesaPin} onChangeText={setMpesaPin} secureTextEntry keyboardType="numeric" style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:10, padding:12, marginTop:6}}/><TouchableOpacity onPress={processMpesaPayment} disabled={loadingPay} style={{backgroundColor:"#0ABAB5", padding:16, borderRadius:12, marginTop:16}}>{loadingPay? <ActivityIndicator color="white"/> : <View style={{flexDirection:"row", justifyContent:"center", gap:8}}><Ionicons name="card" color="white" size={18} /><Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>PAY NOW</Text></View>}</TouchableOpacity><TouchableOpacity onPress={()=>setShowPay(false)} style={{padding:12, marginTop:8}}><Text style={{textAlign:"center", color:"#64748b"}}>Cancel</Text></TouchableOpacity></View></View></Modal>
     </ScrollView>
 
-    <TouchableOpacity
-      onPress={()=> router.push("/contact" as any)}
-      style={{
-        position:"absolute",
-        bottom:24,
-        right:20,
-        backgroundColor:"#0A1931",
-        paddingHorizontal:18,
-        paddingVertical:14,
-        borderRadius:30,
-        flexDirection:"row",
-        alignItems:"center",
-        gap:8,
-        elevation:6
-      }}>
-      <Ionicons name="headset" size={20} color="white" />
-      <Text style={{color:"white", fontWeight:"900"}}>Help</Text>
-    </TouchableOpacity>
+    {/* Removed duplicate Help FAB - you already have Contact tab */}
     </View>
   )
 }

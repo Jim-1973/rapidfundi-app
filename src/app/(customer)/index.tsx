@@ -54,7 +54,7 @@ export default function Index() {
         const photo = await cameraRef.current.takePictureAsync({ quality: 0.7 });
         if (photo?.uri) {
           setEditingUri(photo.uri);
-          setEditingIndex(null); // null = new photo
+          setEditingIndex(null);
           setShowCamera(false);
           setTimeout(() => setEditorOpen(true), 300);
         }
@@ -64,7 +64,6 @@ export default function Index() {
     }
   };
 
-  // PROFESSIONAL EDIT ACTIONS
   const openEditor = (uri: string, index: number) => {
     setEditingUri(uri);
     setEditingIndex(index);
@@ -95,12 +94,10 @@ export default function Index() {
   const saveEditedPhoto = () => {
     if (!editingUri) return;
     if (editingIndex!== null) {
-      // editing existing
       const updated = [...form.photos];
       updated[editingIndex] = editingUri;
       setForm({...form, photos: updated});
     } else {
-      // new photo
       setForm({...form, photos: [...form.photos, editingUri]});
     }
     setEditorOpen(false);
@@ -111,7 +108,6 @@ export default function Index() {
   const retakePhoto = () => {
     setEditorOpen(false);
     setEditingUri(null);
-    // if retaking existing, remove it first then open camera
     if (editingIndex!== null) {
       setForm({...form, photos: form.photos.filter((_, i) => i!== editingIndex)});
     }
@@ -155,8 +151,6 @@ export default function Index() {
     } catch(e:any){ Alert.alert("Error", e.message); } finally { setLoading(false); }
   };
 
-  const logout = async () => { await supabase.auth.signOut(); router.replace("/login"); };
-
   if(step===4) return (
     <View style={{ flex:1, backgroundColor:"#f8fafc", justifyContent:"center", padding:24 }}>
       <View style={{ backgroundColor:"white", borderRadius:20, padding:24 }}>
@@ -169,11 +163,10 @@ export default function Index() {
 
   return (
     <>
-    <ScrollView style={{ flex:1, backgroundColor:"white" }} contentContainerStyle={{ padding:20, paddingTop:50 }}>
-      <View style={{ flexDirection:"row", justifyContent:"space-between", marginBottom:24, alignItems:"center" }}>
-        <Text style={{ fontWeight:"900", fontSize:18 }}>RAPIDFUNDI</Text>
-        <TouchableOpacity onPress={logout}><Text style={{fontSize:12, color:"red", fontWeight:"700"}}>Logout</Text></TouchableOpacity>
-      </View>
+    {/* REMOVED DOUBLE HEADER - now handled by _layout.tsx */}
+    <ScrollView style={{ flex:1, backgroundColor:"white" }} contentContainerStyle={{ padding:20, paddingTop:20 }}>
+
+      {/* Step indicator only */}
       <View style={{ flexDirection:"row", gap:6, marginBottom:24 }}>
         {[1,2,3].map(i=><View key={i} style={{ flex:1, height:6, borderRadius:10, backgroundColor: i<=step? "#0ABAB5" : "#e2e8f0" }} />)}
       </View>
@@ -204,18 +197,15 @@ export default function Index() {
             <Text style={{ fontSize:10, color:"#64748b", marginTop:2 }}>{form.photos.length}/3 photos • Tap photo to edit</Text>
           </TouchableOpacity>
 
-          {/* PROFESSIONAL PHOTO GRID WITH ICONS */}
           <View style={{ flexDirection:"row", gap:10, marginTop:14, flexWrap:"wrap" }}>
             {form.photos.map((uri,i)=>(
               <View key={i} style={{ width:80, height:80 }}>
                 <TouchableOpacity onPress={() => openEditor(uri, i)} activeOpacity={0.8} style={{ width:80, height:80, borderRadius:12, overflow:"hidden", borderWidth:1, borderColor:"#e2e8f0" }}>
                   <Image source={{uri}} style={{ width:80, height:80 }} />
                 </TouchableOpacity>
-                {/* REMOVE ICON */}
                 <TouchableOpacity onPress={() => removePhoto(i)} style={{ position:"absolute", top:-6, right:-6, backgroundColor:"black", width:22, height:22, borderRadius:11, alignItems:"center", justifyContent:"center" }}>
                   <Ionicons name="close" size={14} color="white" />
                 </TouchableOpacity>
-                {/* EDIT ICON */}
                 <View style={{ position:"absolute", bottom:-6, left:-6, backgroundColor:"#0ABAB5", width:22, height:22, borderRadius:11, alignItems:"center", justifyContent:"center" }}>
                   <Ionicons name="pencil" size={12} color="white" />
                 </View>
@@ -266,7 +256,6 @@ export default function Index() {
       )}
     </ScrollView>
 
-    {/* LIVE CAMERA MODAL */}
     <Modal visible={showCamera} animationType="slide">
       <View style={{ flex:1, backgroundColor:"black" }}>
         <CameraView ref={cameraRef} style={{ flex:1 }} facing="back" />
@@ -280,7 +269,6 @@ export default function Index() {
       </View>
     </Modal>
 
-    {/* PROFESSIONAL PHOTO EDITOR MODAL */}
     <Modal visible={editorOpen} animationType="slide">
       <View style={{ flex:1, backgroundColor:"black" }}>
         <View style={{ padding:16, paddingTop:50, flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
