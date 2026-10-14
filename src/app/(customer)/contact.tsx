@@ -1,83 +1,70 @@
-import { View, Text, ScrollView, TouchableOpacity, Linking, Alert } from "react-native";
+import { View, Text, TouchableOpacity, Linking, ScrollView } from "react-native";
+import { Ionicons, FontAwesome5 } from "@expo/vector-icons";
 
-const SUPPORT_PHONE = "+254743525184"; // <-- CHANGE TO YOUR REAL NUMBER
-const SUPPORT_WA = "254743525184"; // without + for wa.me
-const SUPPORT_EMAIL = "kaumbajim@gmail.com";
-const SUPPORT_SMS = "+254743525184"; // <-- CHANGE TO YOUR REAL NUMBER
+const PHONE = "+254722819877";
+const PHONE_DISPLAY = "0722 819 877";
+const WA = "254722819877";
+const EMAIL = "rapidfundi@outlook.com";
 
-export default function ContactPage() {
-
-  const callTeam = async () => {
-    const url = `tel:${SUPPORT_PHONE}`;
-    const can = await Linking.canOpenURL(url);
-    if(!can) return Alert.alert("Cannot make call");
-    Linking.openURL(url);
-  };
-
-  const whatsappTeam = async () => {
-    // pre-filled message
-    const message = encodeURIComponent("Hi RapidFundi Team, I need help with my plumbing job...");
-    const url = `https://wa.me/${SUPPORT_WA}?text=${message}`;
-    Linking.openURL(url);
-  };
-
-  const smsTeam = async () => {
-    const url = `sms:${SUPPORT_SMS}?body=${encodeURIComponent("Hi RapidFundi,")}`;
-    Linking.openURL(url);
-  };
-
-  const emailTeam = async () => {
-    const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("RapidFundi Support")}`;
-    Linking.openURL(url);
-  };
-
+export default function Contact() {
   return (
-    <ScrollView style={{flex:1, backgroundColor:"white"}} contentContainerStyle={{padding:20, paddingTop:50}}>
-      <Text style={{fontSize:26, fontWeight:"900"}}>Contact Support</Text>
-      <Text style={{color:"#64748b", marginTop:4}}>We respond in under 10 minutes — 7am to 9pm</Text>
-
-      <View style={{marginTop:24, gap:14}}>
-        
-        {/* CALL */}
-        <TouchableOpacity onPress={callTeam} style={{backgroundColor:"#0ABAB5", padding:18, borderRadius:14, flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
-          <View>
-            <Text style={{color:"white", fontWeight:"900", fontSize:16}}>📞 Call Team</Text>
-            <Text style={{color:"white", opacity:0.9, marginTop:2, fontSize:12}}>{SUPPORT_PHONE} • Instant</Text>
-          </View>
-          <Text style={{color:"white", fontWeight:"800"}}>CALL →</Text>
-        </TouchableOpacity>
-
-        {/* WHATSAPP */}
-        <TouchableOpacity onPress={whatsappTeam} style={{backgroundColor:"#dcfce7", padding:18, borderRadius:14, borderWidth:1, borderColor:"#16a34a", flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
-          <View>
-            <Text style={{color:"#166534", fontWeight:"900", fontSize:16}}>💬 WhatsApp Us</Text>
-            <Text style={{color:"#166534", marginTop:2, fontSize:12}}>Fastest — Photos & location</Text>
-          </View>
-          <Text style={{color:"#166534", fontWeight:"800"}}>CHAT →</Text>
-        </TouchableOpacity>
-
-        {/* SMS */}
-        <TouchableOpacity onPress={smsTeam} style={{backgroundColor:"white", padding:18, borderRadius:14, borderWidth:1, borderColor:"#e2e8f0", flexDirection:"row", justifyContent:"space-between"}}>
-          <View>
-            <Text style={{fontWeight:"900", fontSize:16}}>✉️ Send SMS</Text>
-            <Text style={{color:"#64748b", marginTop:2, fontSize:12}}>If you have no data</Text>
-          </View>
-          <Text style={{fontWeight:"800"}}>SMS →</Text>
-        </TouchableOpacity>
-
-        {/* EMAIL */}
-        <TouchableOpacity onPress={emailTeam} style={{backgroundColor:"#f8fafc", padding:18, borderRadius:14, borderWidth:1, borderColor:"#e2e8f0"}}>
-          <Text style={{fontWeight:"900", fontSize:16}}>📧 Email</Text>
-          <Text style={{color:"#64748b", marginTop:2, fontSize:12}}>{SUPPORT_EMAIL}</Text>
-        </TouchableOpacity>
-
-        {/* Emergency */}
-        <View style={{backgroundColor:"#fef2f2", padding:14, borderRadius:12, borderWidth:1, borderColor:"#fecaca", marginTop:10}}>
-          <Text style={{fontWeight:"800", color:"#991b1b"}}>🚨 Emergency Leak? Call directly</Text>
-          <Text style={{fontSize:12, color:"#991b1b", marginTop:4}}>If water is flooding, use the Call button — we prioritize EN_ROUTE jobs and will dispatch in 30 mins.</Text>
+    <ScrollView style={{flex:1, backgroundColor:"#f8fafc"}} contentContainerStyle={{padding:24, paddingTop:60}}>
+      
+      {/* HEADER */}
+      <View style={{alignItems:"center", marginBottom:28}}>
+        <View style={{width:72, height:72, borderRadius:36, backgroundColor:"#0A1931", justifyContent:"center", alignItems:"center"}}>
+          <Ionicons name="headset" size={32} color="white" />
         </View>
-
+        <Text style={{fontSize:24, fontWeight:"900", marginTop:14}}>We're here to help</Text>
+        <View style={{flexDirection:"row", alignItems:"center", gap:6, backgroundColor:"#dcfce7", paddingHorizontal:10, paddingVertical:4, borderRadius:20, marginTop:8}}>
+          <View style={{width:6, height:6, borderRadius:3, backgroundColor:"#16a34a"}} />
+          <Text style={{fontSize:11, fontWeight:"700", color:"#166534"}}>Online • Replies in ~5 mins</Text>
+        </View>
       </View>
+
+      {/* PRIMARY ACTIONS - 2 BIG BUTTONS */}
+      <View style={{flexDirection:"row", gap:12}}>
+        <TouchableOpacity onPress={()=> Linking.openURL(`tel:${PHONE}`)} style={{flex:1, backgroundColor:"white", padding:20, borderRadius:16, borderWidth:1, borderColor:"#e2e8f0", alignItems:"center", elevation:2}}>
+          <View style={{width:48, height:48, borderRadius:24, backgroundColor:"#0ABAB5", justifyContent:"center", alignItems:"center"}}>
+            <Ionicons name="call" size={22} color="white" />
+          </View>
+          <Text style={{fontWeight:"900", marginTop:10}}>Call</Text>
+          <Text style={{fontSize:11, color:"#64748b", marginTop:2}}>{PHONE_DISPLAY}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity onPress={()=> Linking.openURL(`https://wa.me/${WA}?text=${encodeURIComponent("Hi RapidFundi, I need help")}`)} style={{flex:1, backgroundColor:"#0A1931", padding:20, borderRadius:16, alignItems:"center", elevation:2}}>
+          <View style={{width:48, height:48, borderRadius:24, backgroundColor:"white", justifyContent:"center", alignItems:"center"}}>
+            <FontAwesome5 name="whatsapp" size={22} color="#0A1931" />
+          </View>
+          <Text style={{fontWeight:"900", marginTop:10, color:"white"}}>WhatsApp</Text>
+          <Text style={{fontSize:11, color:"#94a3b8", marginTop:2}}>Fastest</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* EMAIL - SINGLE LINE */}
+      <TouchableOpacity onPress={()=> Linking.openURL(`mailto:${EMAIL}`)} style={{backgroundColor:"white", marginTop:14, padding:16, borderRadius:16, borderWidth:1, borderColor:"#e2e8f0", flexDirection:"row", alignItems:"center", gap:12}}>
+        <View style={{width:40, height:40, borderRadius:20, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}>
+          <Ionicons name="mail-outline" size={20} color="#334155" />
+        </View>
+        <View style={{flex:1}}>
+          <Text style={{fontSize:12, color:"#64748b"}}>Email us</Text>
+          <Text style={{fontWeight:"700"}}>{EMAIL}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color="#cbd5e1" />
+      </TouchableOpacity>
+
+      {/* FOOTER INFO */}
+      <View style={{marginTop:24, backgroundColor:"white", padding:14, borderRadius:12, borderWidth:1, borderColor:"#e2e8f0"}}>
+        <View style={{flexDirection:"row", gap:8}}>
+          <Ionicons name="time-outline" size={14} color="#64748b" />
+          <Text style={{fontSize:12, color:"#64748b"}}>Support hours: 7am - 9pm daily</Text>
+        </View>
+        <View style={{flexDirection:"row", gap:8, marginTop:6}}>
+          <Ionicons name="shield-checkmark-outline" size={14} color="#64748b" />
+          <Text style={{fontSize:12, color:"#64748b"}}>Emergency leaks prioritized — 30 min response</Text>
+        </View>
+      </View>
+
     </ScrollView>
   )
 }
