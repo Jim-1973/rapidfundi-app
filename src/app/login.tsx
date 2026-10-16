@@ -37,16 +37,18 @@ export default function Login(){
       if(error) throw error;
 
       const userId = data.user.id;
+      console.log("Logged in userId:", userId);
 
       // 1. Check if PLUMBER (must be created by admin via WhatsApp)
-      const { data: plumber } = await supabase.from('plumbers').select('id, must_change_password').eq('user_id', userId).maybeSingle();
+      const { data: plumber, error: pError } = await supabase.from('plumbers').select('id, must_change_password').eq('user_id', userId).maybeSingle();
+      console.log("Plumber check:", plumber, pError);
       
       if(plumber){
         if(plumber.must_change_password){
-          router.replace("/(plumber)/change-password" as any);
+          router.replace("/admin/plumber/change-password" as any);
           return;
         }
-        router.replace("/(plumber)/jobs" as any);
+        router.replace("/admin/plumber" as any);
         return;
       }
 
