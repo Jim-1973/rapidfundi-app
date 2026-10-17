@@ -4,11 +4,13 @@ import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import { supabase } from "../../../lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
+import NotificationBell from "../../components/NotificationBell";
 
 export default function CustomerLayout() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
   const [hasSession, setHasSession] = useState(false);
+  const [userId, setUserId] = useState<string | undefined>();
 
   useEffect(() => {
     supabase.auth.getSession().then((res) => {
@@ -17,6 +19,7 @@ export default function CustomerLayout() {
         router.replace("/login" as any);
       } else {
         setHasSession(true);
+        setUserId(session.user.id);
       }
       setChecking(false);
     });
@@ -28,14 +31,12 @@ export default function CustomerLayout() {
         await supabase.auth.signOut();
       } catch {}
       setHasSession(false);
-      // Small delay to ensure storage cleared
       setTimeout(() => {
         router.replace("/login" as any);
       }, 100);
     };
 
     if (Platform.OS === 'web') {
-      // Alert.alert does NOT work on web - use confirm
       const ok = window.confirm("Logout? Are you sure you want to logout?");
       if (ok) await doLogout();
     } else {
@@ -67,10 +68,13 @@ export default function CustomerLayout() {
         headerTitleStyle: { fontWeight:"900" },
         headerTintColor: "#0A1931",
         headerRight: () => (
-          <TouchableOpacity onPress={logout} style={{flexDirection:"row", alignItems:"center", gap:6, backgroundColor:"#fee2e2", paddingHorizontal:12, paddingVertical:6, borderRadius:20, marginRight:12}}>
-            <Ionicons name="log-out-outline" size={16} color="#991b1b" />
-            <Text style={{fontWeight:"800", fontSize:12, color:"#991b1b"}}>Logout</Text>
-          </TouchableOpacity>
+          <View style={{flexDirection:"row", alignItems:"center", gap:8, marginRight:12}}>
+            <NotificationBell userId={userId} />
+            <TouchableOpacity onPress={logout} style={{flexDirection:"row", alignItems:"center", gap:6, backgroundColor:"#fee2e2", paddingHorizontal:12, paddingVertical:6, borderRadius:20}}>
+              <Ionicons name="log-out-outline" size={16} color="#991b1b" />
+              <Text style={{fontWeight:"800", fontSize:12, color:"#991b1b"}}>Logout</Text>
+            </TouchableOpacity>
+          </View>
         ),
       }}>
       <Tabs.Screen

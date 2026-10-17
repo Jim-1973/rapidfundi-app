@@ -1,113 +1,134 @@
 import { useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, Alert, ActivityIndicator } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, ActivityIndicator } from "react-native";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "expo-router";
+import { Link } from "expo-router";
 
 export default function Login(){
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [errors, setErrors] = useState({ email: "", password: "" });
   const [loading, setLoading] = useState(false);
+  const [errorBanner, setErrorBanner] = useState("");
+  const [successBanner, setSuccessBanner] = useState("");
 
-  const doLogin = async () => {
-    // 1. Inline validation - no Alert
-    const newErrors = { email: "", password: "" };
-    let hasError = false;
-    
+  const handleLogin = async () => {
+    setErrorBanner("");
+    setSuccessBanner("");
+
+    // 1. VALIDATION - professional messages
     if(!email.trim()){
-      newErrors.email = "Email is required";
-      hasError = true;
-    } else if(!/\S+@\S+\.\S+/.test(email)){
-      newErrors.email = "Enter valid email";
-      hasError = true;
+      setErrorBanner("Email address is required.");
+      return;
     }
-    
+    if(!/\S+@\S+\.\S+/.test(email.trim())){
+      setErrorBanner("Invalid email format. Example: customer@gmail.com");
+      return;
+    }
     if(!password){
-      newErrors.password = "Password is required";
-      hasError = true;
+      setErrorBanner("Password is required.");
+      return;
     }
-    
-    setErrors(newErrors);
-    if(hasError) return;
+    if(password.length < 6){
+      setErrorBanner("Password must be at least 6 characters.");
+      return;
+    }
 
     setLoading(true);
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-      if(error) throw error;
+    try{
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password: password,
+      });
 
-      const userId = data.user.id;
-      console.log("Logged in userId:", userId);
-
-      // 1. Check if PLUMBER (must be created by admin via WhatsApp)
-      const { data: plumber, error: pError } = await supabase.from('plumbers').select('id, must_change_password').eq('user_id', userId).maybeSingle();
-      console.log("Plumber check:", plumber, pError);
-      
-      if(plumber){
-        if(plumber.must_change_password){
-          router.replace("/admin/plumber/change-password" as any);
-          return;
+      if(error){
+        // PROFESSIONAL ERROR MAPPING
+        const msg = error.message.toLowerCase();
+        if(msg.includes("invalid login credentials") || msg.includes("invalid")){
+          throw new Error("Invalid email or password. Please check and try again.");
         }
-        router.replace("/admin/plumber" as any);
+        if(msg.includes("email not confirmed")){
+          throw new Error("Your email is not confirmed. Please check your inbox or contact admin to disable Confirm Email.");
+        }
+        if(msg.includes("user not found") || msg.includes("not found")){
+          throw new Error(`No account found for ${email}. Please Sign Up as Customer first.`);
+        }
+        throw new Error(error.message);
+      }
+
+      const user = data.user;
+      if(!user) throw new Error("Login failed. Please try again.");
+
+      // 2. CHECK ROLE - plumber must change password?
+      const { data: plumber } = await supabase.from('plumbers').select('must_change_password').eq('user_id', user.id).maybeSingle();
+      
+      if(plumber?.must_change_password){
+        setSuccessBanner("Temporary password detected. Redirecting to change password...");
+        setTimeout(()=> router.replace("/plumber/change-password" as any), 800);
         return;
       }
 
-      // 2. Default = CUSTOMER
-      const { data: cust } = await supabase.from('customers').select('id').eq('id', userId).maybeSingle();
-      if(!cust){
-        await supabase.from('customers').insert({ id: userId, email: data.user.email });
+      // 3. CHECK ROLE - admin?
+      // Simple check: if email is admin@rapidfundi.com or role in user metadata
+      const isAdmin = user.email?.includes("admin") || user.user_metadata?.role === "admin";
+      
+      if(isAdmin){
+        router.replace("/admin" as any);
+      } else if(plumber){
+        router.replace("/plumber" as any);
+      } else {
+        // Customer
+        router.replace("/(customer)" as any); // or "/" or "/customer"
       }
 
-      router.replace("/(customer)" as any);
-
-    } catch(e:any){
-      Alert.alert("Login Failed", e.message);
-    } finally {
+    }catch(e:any){
+      setErrorBanner(e.message || "Login failed. Please try again.");
+    }finally{
       setLoading(false);
     }
   };
 
   return (
     <View style={{flex:1, backgroundColor:"white", padding:24, justifyContent:"center"}}>
-      <Text style={{fontSize:32, fontWeight:"900"}}>Welcome Back</Text>
+      <Text style={{fontSize:28, fontWeight:"900", color:"#0A1931"}}>Welcome Back</Text>
       <Text style={{color:"#64748b", marginTop:6}}>Login to RapidFundi</Text>
-      <Text style={{fontSize:11, color:"#94a3b8", marginTop:4}}>Customer self-register • Plumber must be added by Admin</Text>
-      
-      {/* Email with required notice */}
-      <View style={{marginTop:24}}>
-        <TextInput 
-          value={email} 
-          onChangeText={(t)=>{ setEmail(t); if(errors.email) setErrors({...errors, email:""}) }} 
-          placeholder="Email" 
-          autoCapitalize="none" 
-          keyboardType="email-address" 
-          style={{borderWidth:1, borderColor: errors.email ? "#ef4444" : "#e2e8f0", borderRadius:12, padding:14}}
-        />
-        {errors.email ? <Text style={{color:"#ef4444", fontSize:12, marginTop:6, fontWeight:"600"}}>{errors.email}</Text> : null}
-      </View>
 
-      {/* Password with required notice */}
-      <View style={{marginTop:12}}>
-        <TextInput 
-          value={password} 
-          onChangeText={(t)=>{ setPassword(t); if(errors.password) setErrors({...errors, password:""}) }} 
-          placeholder="Password" 
-          secureTextEntry 
-          style={{borderWidth:1, borderColor: errors.password ? "#ef4444" : "#e2e8f0", borderRadius:12, padding:14}}
-        />
-        {errors.password ? <Text style={{color:"#ef4444", fontSize:12, marginTop:6, fontWeight:"600"}}>{errors.password}</Text> : null}
-      </View>
+      {errorBanner ? (
+        <View style={{backgroundColor:"#fef2f2", borderWidth:1, borderColor:"#fecaca", padding:12, borderRadius:10, marginTop:16}}>
+          <Text style={{color:"#dc2626", fontSize:13, fontWeight:"700"}}>⚠️ {errorBanner}</Text>
+        </View>
+      ) : null}
+
+      {successBanner ? (
+        <View style={{backgroundColor:"#f0fdf4", borderWidth:1, borderColor:"#bbf7d0", padding:12, borderRadius:10, marginTop:16}}>
+          <Text style={{color:"#16a34a", fontSize:13, fontWeight:"700"}}>✅ {successBanner}</Text>
+        </View>
+      ) : null}
+
+      <TextInput 
+        value={email} 
+        onChangeText={(t)=>{ setEmail(t); if(errorBanner) setErrorBanner(""); }} 
+        placeholder="Email address" 
+        autoCapitalize="none" 
+        keyboardType="email-address"
+        style={{borderWidth:1, borderColor: errorBanner ? "#fecaca" : "#e2e8f0", borderRadius:12, padding:14, marginTop:20, backgroundColor:"#f8fafc"}} 
+      />
       
-      <TouchableOpacity onPress={doLogin} disabled={loading} style={{backgroundColor:"#0ABAB5", padding:16, borderRadius:12, marginTop:16}}>
+      <TextInput 
+        value={password} 
+        onChangeText={(t)=>{ setPassword(t); if(errorBanner) setErrorBanner(""); }} 
+        placeholder="Password" 
+        secureTextEntry 
+        style={{borderWidth:1, borderColor: errorBanner ? "#fecaca" : "#e2e8f0", borderRadius:12, padding:14, marginTop:12, backgroundColor:"#f8fafc"}} 
+      />
+
+      <TouchableOpacity onPress={handleLogin} disabled={loading} style={{backgroundColor: loading ? "#94a3b8" : "#0ABAB5", padding:16, borderRadius:12, marginTop:20}}>
         {loading ? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>LOGIN</Text>}
       </TouchableOpacity>
-      
-      {/* FIX 2: Signup is NOT inside (customer) - go to standalone signup */}
-      <TouchableOpacity onPress={()=>router.push("/signup" as any)} style={{marginTop:16}}>
-        <Text style={{textAlign:"center", color:"#0ABAB5", fontWeight:"700"}}>Don't have account? Sign Up as Customer</Text>
-      </TouchableOpacity>
 
-      <Text style={{textAlign:"center", fontSize:10, color:"#cbd5e1", marginTop:20}}>Plumbers: Must be On-boarded by Admin</Text>
+      <Link href={"/signup" as any} style={{marginTop:16}}>
+        <Text style={{color:"#0ABAB5", textAlign:"center", fontWeight:"700"}}>Don't have account? Sign Up as Customer</Text>
+      </Link>
     </View>
   );
 }

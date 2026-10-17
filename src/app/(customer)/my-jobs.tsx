@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { View, Text, ScrollView, TouchableOpacity, Alert, Image, TextInput, Modal, ActivityIndicator } from "react-native";
-import { supabase } from "../../../lib/supabase";
+import { supabase, notifyAdmin } from "../../../lib/supabase";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 
@@ -14,6 +14,9 @@ export default function MyJobs(){
   const [mpesaPhone, setMpesaPhone] = useState("254");
   const [loadingPay, setLoadingPay] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isLive, setIsLive] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
 
   const getStatusUI = (status: string, payment_status?: string) => {
     if(payment_status === 'PAID' && status === 'COMPLETED'){
@@ -40,6 +43,7 @@ export default function MyJobs(){
       router.replace("/login" as any);
       return;
     }
+    setUserId(user.id);
     const { data, error } = await supabase
 .from('jobs')
 .select(`*, quotations(*), plumbers(name, plumber_number, phone, rating)`)
@@ -67,21 +71,51 @@ export default function MyJobs(){
       }
       setMedia(newMedia);
     }
+    setLastUpdate(new Date().toLocaleTimeString());
     setLoading(false);
   };
 
   useFocusEffect(useCallback(() => { fetchJobs(); }, []));
+
+  useEffect(()=>{
+    if(!userId) return;
+    const channel = supabase
+      .channel(`customer-${userId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'jobs', filter: `customer_id=eq.${userId}` }, () => fetchJobs())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'quotations' }, () => fetchJobs())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'job_media' }, () => fetchJobs())
+      .subscribe((status) => { if(status === 'SUBSCRIBED') setIsLive(true); });
+    return () => { supabase.removeChannel(channel); }
+  }, [userId]);
+
+  // === NOTIFICATION: CUSTOMER APPROVES -> ADMIN ===
   const approve = async (job:any, q:any) => {
     await supabase.from('quotations').update({status:'APPROVED'}).eq('id', q.id);
     await supabase.from('jobs').update({status:'QUOTATION_APPROVED'}).eq('id', job.id);
-    Alert.alert("Approved", "Admin will assign plumber now");
-    fetchJobs();
+    
+    // 🔔 NOTIFY ADMIN
+    await notifyAdmin(
+      "✅ Quotation Approved",
+      `Customer approved ${q.quotation_number} for ${job.job_number} (KES ${q.total}). Assign plumber now.`,
+      "APPROVAL",
+      job.id
+    );
+
+    Alert.alert("Approved", "Admin will assign plumber now 🔔");
   };
+
   const decline = async (q:any, job:any) => {
     await supabase.from('quotations').update({status:'DECLINED'}).eq('id', q.id);
     await supabase.from('jobs').update({status:'DECLINED'}).eq('id', job.id);
-    fetchJobs();
+    
+    await notifyAdmin(
+      "❌ Quotation Declined",
+      `Customer declined ${q.quotation_number} for ${job.job_number}.`,
+      "DECLINED",
+      job.id
+    );
   };
+
  const openMpesaPay = async (job:any) => {
   const q = job.quotations?.[0];
   if(!q){ Alert.alert("No quotation"); return; }
@@ -92,6 +126,7 @@ export default function MyJobs(){
   setMpesaPin("");
   setShowPay(true);
 };
+
   const processMpesaPayment = async () => {
     if(mpesaPin.length < 4){ Alert.alert("Enter MPESA PIN"); return; }
     if(mpesaPhone.length < 12){ Alert.alert("Enter valid MPESA number e.g. 2547..."); return; }
@@ -101,11 +136,20 @@ export default function MyJobs(){
       const q = payJob.quotations?.[0];
       await supabase.from('jobs').update({ payment_status: 'PAID', status: 'COMPLETED', paid_at: new Date().toISOString() }).eq('id', payJob.id);
       if(q){ await supabase.from('quotations').update({ status: 'PAID' }).eq('id', q.id); }
+      
+      // 🔔 NOTIFY ADMIN - PAYMENT DONE
+      await notifyAdmin(
+        "💰 Payment Received!",
+        `${payJob.job_number} paid KES ${q.total} via MPESA. Code QG${Date.now().toString().slice(-6)}`,
+        "PAYMENT",
+        payJob.id
+      );
+
       setShowPay(false);
       Alert.alert("Payment Success", `KES ${q.total} paid via MPESA\nCode: QG${Date.now().toString().slice(-6)}`);
-      fetchJobs();
     } catch(e:any){ Alert.alert("Payment Failed", e.message); } finally { setLoadingPay(false); }
   };
+
   const confirmWorkDone = async (job:any) => {
     Alert.alert("Confirm Work", "Have you verified the final photo?", [{ text: "Cancel", style:"cancel" }, { text: "Yes, Verify & Pay", onPress: ()=> openMpesaPay(job) }])
   };
@@ -113,10 +157,13 @@ export default function MyJobs(){
   return (
     <View style={{flex:1, backgroundColor:"#f8fafc"}}>
     <ScrollView style={{flex:1}} contentContainerStyle={{padding:16, paddingTop:12, paddingBottom:30}}>
-
-      {/* FIXED: Removed duplicate My Jobs header - now handled by _layout.tsx */}
-      <Text style={{color:"#64748b", fontSize:12, marginBottom:12}}>Track, verify & pay via MPESA</Text>
-
+      <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
+        <Text style={{color:"#64748b", fontSize:12}}>Track, verify & pay via MPESA</Text>
+        <View style={{flexDirection:"row", gap:8, alignItems:"center"}}>
+          {isLive && <View style={{flexDirection:"row", alignItems:"center", backgroundColor:"#dcfce7", paddingHorizontal:8, paddingVertical:3, borderRadius:12, gap:4}}><View style={{width:6, height:6, borderRadius:3, backgroundColor:"#22c55e"}}/><Text style={{fontSize:10, fontWeight:"900", color:"#16a34a"}}>LIVE</Text></View>}
+          {lastUpdate ? <Text style={{fontSize:10, color:"#94a3b8"}}>{lastUpdate}</Text> : null}
+        </View>
+      </View>
       {loading && <ActivityIndicator style={{ marginTop:30 }} color="#0ABAB5" />}
       <View style={{gap:14}}>
         {jobs.map((job, idx)=>{
@@ -167,12 +214,10 @@ export default function MyJobs(){
             </View>
           )
         })}
-        {jobs.length===0 &&!loading && <Text style={{textAlign:"center", marginTop:40, color:"#94a3b8"}}>No jobs yet.</Text>}
+        {jobs.length===0 &&!loading && <Text style={{textAlign:"center", marginTop:40, color:"#94a3b8"}}>No jobs yet. Create a job and track LIVE here 🔴</Text>}
       </View>
       <Modal visible={showPay} transparent animationType="slide"><View style={{flex:1, backgroundColor:"rgba(0,0,0,0.5)", justifyContent:"flex-end"}}><View style={{backgroundColor:"white", padding:20, borderTopLeftRadius:20, borderTopRightRadius:20}}><Text style={{fontSize:20, fontWeight:"900"}}>MPESA Payment</Text><Text style={{color:"#64748b", marginTop:4}}>Pay KES {payJob?.quotations?.[0]?.total}</Text><Text style={{fontWeight:"700", marginTop:16}}>MPESA Phone</Text><TextInput value={mpesaPhone} onChangeText={setMpesaPhone} keyboardType="phone-pad" style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:10, padding:12, marginTop:6}}/><Text style={{fontWeight:"700", marginTop:12}}>MPESA PIN</Text><TextInput value={mpesaPin} onChangeText={setMpesaPin} secureTextEntry keyboardType="numeric" style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:10, padding:12, marginTop:6}}/><TouchableOpacity onPress={processMpesaPayment} disabled={loadingPay} style={{backgroundColor:"#0ABAB5", padding:16, borderRadius:12, marginTop:16}}>{loadingPay? <ActivityIndicator color="white"/> : <View style={{flexDirection:"row", justifyContent:"center", gap:8}}><Ionicons name="card" color="white" size={18} /><Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>PAY NOW</Text></View>}</TouchableOpacity><TouchableOpacity onPress={()=>setShowPay(false)} style={{padding:12, marginTop:8}}><Text style={{textAlign:"center", color:"#64748b"}}>Cancel</Text></TouchableOpacity></View></View></Modal>
     </ScrollView>
-
-    {/* Removed duplicate Help FAB - you already have Contact tab */}
     </View>
   )
 }

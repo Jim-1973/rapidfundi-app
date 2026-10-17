@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { View, Text, ScrollView, TouchableOpacity, Alert, Image, ActivityIndicator } from "react-native";
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import { supabase } from "../../../lib/supabase";
+import { supabase, notifyCustomer } from "../../../lib/supabase";
 import { useRouter } from "expo-router";
 
 export default function PlumberApp() {
@@ -14,8 +14,9 @@ export default function PlumberApp() {
   const [gps, setGps] = useState<any>(null);
   const [plumberProfile, setPlumberProfile] = useState<any>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [isLive, setIsLive] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState("");
 
-  // --- NEW: CHECK PLUMBER LOGIN & MUST CHANGE ---
   useEffect(()=>{
     const checkAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -49,14 +50,36 @@ export default function PlumberApp() {
   const fetchJobs = async (plumberId?: string) => {
     const id = plumberId || plumberProfile?.id;
     if(!id) return;
-    // Show jobs assigned to THIS plumber OR unassigned but in flow
     const { data } = await supabase.from('jobs')
      .select('*, plumbers(*)')
      .eq('assigned_plumber_id', id)
      .in('status',['ASSIGNED','EN_ROUTE','ARRIVED'])
      .order('created_at',{ascending:false});
     setJobs(data||[]);
+    setLastUpdate(new Date().toLocaleTimeString());
   };
+
+  useEffect(()=>{
+    if(!plumberProfile?.id) return;
+    const channel = supabase
+      .channel(`plumber-${plumberProfile.id}`)
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'jobs',
+        filter: `assigned_plumber_id=eq.${plumberProfile.id}`
+      }, (payload) => {
+        fetchJobs(plumberProfile.id);
+        if(selected && payload.new && (payload.new as any).id === selected.id){
+          setSelected(payload.new);
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'job_media' }, () => {
+        if(selected) fetchMedia(selected.id);
+      })
+      .subscribe((status) => { if(status === 'SUBSCRIBED') setIsLive(true); });
+    return () => { supabase.removeChannel(channel); }
+  }, [plumberProfile?.id, selected?.id]);
 
   const fetchMedia = async (jobId:string) => {
     const { data } = await supabase.from('job_media').select('*').eq('job_id', jobId).order('created_at',{ascending:false});
@@ -104,13 +127,33 @@ export default function PlumberApp() {
       }).eq('id', selected.id);
       if(jobErr) throw new Error("Status update: "+jobErr.message);
 
+      // 🔔 NOTIFY CUSTOMER - ARRIVED / COMPLETED
+      if(selected.customer_id){
+        if(type === 'arrival'){
+          await notifyCustomer(
+            selected.customer_id,
+            "📍 Plumber Arrived!",
+            `Plumber arrived at ${selected.building_name} with GPS proof (${latitude.toFixed(4)}, ${longitude.toFixed(4)}). Work ongoing.`,
+            "STATUS",
+            selected.id
+          );
+        } else {
+          await notifyCustomer(
+            selected.customer_id,
+            "✅ Work Completed - Please Verify!",
+            `${plumberProfile.name} completed ${selected.job_number}. Final photo uploaded. Please verify and pay via MPESA.`,
+            "COMPLETION",
+            selected.id
+          );
+        }
+      }
+
       Alert.alert("✅ SUCCESS",
         type==='arrival'
-      ? `ARRIVED! Photo + GPS saved\n${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
-        : `COMPLETED! Final photo saved`
+      ? `ARRIVED! Customer notified 🔔\n${latitude.toFixed(5)}, ${longitude.toFixed(5)}`
+        : `COMPLETED! Customer notified to verify & pay 🔔`
       );
       setSelected(null);
-      fetchJobs();
     } catch(e:any){
       Alert.alert("Upload Failed", e.message);
     } finally {
@@ -118,11 +161,26 @@ export default function PlumberApp() {
     }
   };
 
+  // 🔔 EN_ROUTE NOTIFICATION
   const markEnRoute = async () => {
     setLoading(true);
-    await supabase.from('jobs').update({ status: 'EN_ROUTE' }).eq('id', selected.id);
-    Alert.alert("On The Way 🚚", "Customer & Admin notified");
-    setSelected(null); fetchJobs(); setLoading(false);
+    try{
+      await supabase.from('jobs').update({ status: 'EN_ROUTE' }).eq('id', selected.id);
+      
+      // NOTIFY CUSTOMER
+      if(selected.customer_id){
+        await notifyCustomer(
+          selected.customer_id,
+          "🚚 Plumber On The Way!",
+          `${plumberProfile.name} is en route to ${selected.building_name}, ${selected.street}. 30 min response active. Track LIVE.`,
+          "STATUS",
+          selected.id
+        );
+      }
+
+      Alert.alert("On The Way 🚚", "Customer notified with LIVE tracking 🔔");
+      setSelected(null);
+    }catch(e:any){ Alert.alert("Failed", e.message); } finally { setLoading(false); }
   };
 
   const doLogout = async () => {
@@ -164,12 +222,12 @@ export default function PlumberApp() {
         <View style={{marginTop:30, gap:12}}>
           {selected.status==='ASSIGNED' && (
             <TouchableOpacity onPress={markEnRoute} disabled={loading} style={{backgroundColor:"#f59e0b", padding:18, borderRadius:12}}>
-              {loading? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>🚚 ON THE WAY</Text>}
+              {loading? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>🚚 ON THE WAY + NOTIFY CUSTOMER</Text>}
             </TouchableOpacity>
           )}
           {(selected.status==='ASSIGNED' || selected.status==='EN_ROUTE') && (
             <TouchableOpacity onPress={()=>takePhotoWithGPS('arrival')} disabled={loading} style={{backgroundColor:"#0ABAB5", padding:18, borderRadius:12}}>
-              {loading? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>📍 ARRIVED - Photo + GPS</Text>}
+              {loading? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>📍 ARRIVED - Photo + GPS + NOTIFY</Text>}
             </TouchableOpacity>
           )}
           {isArrived && (
@@ -178,7 +236,7 @@ export default function PlumberApp() {
                 <Text style={{fontWeight:"800", color:"#1e40af"}}>🔧 WORK ONGOING</Text>
               </View>
               <TouchableOpacity onPress={()=>takePhotoWithGPS('completion')} disabled={loading} style={{backgroundColor:"#0A1931", padding:18, borderRadius:12}}>
-                {loading? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>✅ WORK DONE - Final Photo</Text>}
+                {loading? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"900"}}>✅ WORK DONE - Final Photo + NOTIFY CUSTOMER</Text>}
               </TouchableOpacity>
             </>
           )}
@@ -191,8 +249,11 @@ export default function PlumberApp() {
     <ScrollView style={{flex:1, backgroundColor:"#f8fafc"}} contentContainerStyle={{padding:20, paddingTop:50}}>
       <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
         <View>
-          <Text style={{fontSize:28, fontWeight:"900"}}>Plumber App</Text>
-          <Text style={{color:"#64748b"}}>{plumberProfile?.plumber_number} {plumberProfile?.name} • {jobs.length} jobs</Text>
+          <View style={{flexDirection:"row", alignItems:"center", gap:8}}>
+            <Text style={{fontSize:28, fontWeight:"900"}}>Plumber App</Text>
+            {isLive && <View style={{flexDirection:"row", alignItems:"center", backgroundColor:"#dcfce7", paddingHorizontal:8, paddingVertical:3, borderRadius:12, gap:4}}><View style={{width:6, height:6, borderRadius:3, backgroundColor:"#22c55e"}}/><Text style={{fontSize:10, fontWeight:"900", color:"#16a34a"}}>LIVE</Text></View>}
+          </View>
+          <Text style={{color:"#64748b"}}>{plumberProfile?.plumber_number} {plumberProfile?.name} • {jobs.length} jobs {lastUpdate ? `• ${lastUpdate}` : ""}</Text>
         </View>
         <TouchableOpacity onPress={doLogout} style={{backgroundColor:"#fee2e2", padding:8, borderRadius:8}}><Text style={{color:"red", fontWeight:"700", fontSize:12}}>Logout</Text></TouchableOpacity>
       </View>
@@ -208,9 +269,9 @@ export default function PlumberApp() {
             <Text style={{fontSize:12, color:"#64748b"}}>Floor {j.floor} • {j.street}</Text>
           </TouchableOpacity>
         ))}
-        {jobs.length===0 && <Text style={{textAlign:"center", marginTop:40, color:"#94a3b8"}}>No jobs assigned to you. Admin must assign.</Text>}
+        {jobs.length===0 && <Text style={{textAlign:"center", marginTop:40, color:"#94a3b8"}}>No jobs assigned. Admin assignment will appear LIVE here 🔴</Text>}
       </View>
-      <TouchableOpacity onPress={()=>fetchJobs()} style={{marginTop:20, padding:12, borderWidth:1, borderColor:"#e2e8f0", borderRadius:10}}><Text style={{textAlign:"center"}}>↻ Refresh</Text></TouchableOpacity>
+      <TouchableOpacity onPress={()=>fetchJobs()} style={{marginTop:20, padding:12, borderWidth:1, borderColor:"#e2e8f0", borderRadius:10}}><Text style={{textAlign:"center"}}>↻ Refresh (Live is ON)</Text></TouchableOpacity>
     </ScrollView>
   )
 }
