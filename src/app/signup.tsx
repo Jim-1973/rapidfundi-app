@@ -47,12 +47,26 @@ export default function Signup(){
 
     setLoading(true);
     try {
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email: email.trim(),
         password,
         options:{ data:{ full_name:name, role:"customer", phone: phone } }
       });
       if(error) throw error;
+
+      // FIX: Explicitly insert into customers table (trigger is backup)
+      if(data.user){
+        const { error: custError } = await supabase.from("customers").insert({
+          id: data.user.id,
+          full_name: name.trim(),
+          email: email.trim(),
+          phone: phone.trim(),
+        });
+        // Ignore conflict if trigger already inserted
+        if(custError && !custError.message.includes("duplicate")) {
+          console.log("Customer insert warning:", custError.message);
+        }
+      }
 
       Alert.alert("Success","Account created! Login now.");
       router.replace("/login" as any);

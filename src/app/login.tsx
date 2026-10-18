@@ -16,7 +16,6 @@ export default function Login(){
     setErrorBanner("");
     setSuccessBanner("");
 
-    // 1. VALIDATION - professional messages
     if(!email.trim()){
       setErrorBanner("Email address is required.");
       return;
@@ -42,7 +41,6 @@ export default function Login(){
       });
 
       if(error){
-        // PROFESSIONAL ERROR MAPPING
         const msg = error.message.toLowerCase();
         if(msg.includes("invalid login credentials") || msg.includes("invalid")){
           throw new Error("Invalid email or password. Please check and try again.");
@@ -59,7 +57,6 @@ export default function Login(){
       const user = data.user;
       if(!user) throw new Error("Login failed. Please try again.");
 
-      // 2. CHECK ROLE - plumber must change password?
       const { data: plumber } = await supabase.from('plumbers').select('must_change_password').eq('user_id', user.id).maybeSingle();
       
       if(plumber?.must_change_password){
@@ -68,8 +65,6 @@ export default function Login(){
         return;
       }
 
-      // 3. CHECK ROLE - admin?
-      // Simple check: if email is admin@rapidfundi.com or role in user metadata
       const isAdmin = user.email?.includes("admin") || user.user_metadata?.role === "admin";
       
       if(isAdmin){
@@ -77,8 +72,7 @@ export default function Login(){
       } else if(plumber){
         router.replace("/plumber" as any);
       } else {
-        // Customer
-        router.replace("/(customer)" as any); // or "/" or "/customer"
+        router.replace("/(customer)" as any);
       }
 
     }catch(e:any){
@@ -126,9 +120,16 @@ export default function Login(){
         {loading ? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>LOGIN</Text>}
       </TouchableOpacity>
 
-      <Link href={"/signup" as any} style={{marginTop:16}}>
-        <Text style={{color:"#0ABAB5", textAlign:"center", fontWeight:"700"}}>Don't have account? Sign Up as Customer</Text>
-      </Link>
+      {/* PROFESSIONAL SAME LINE BELOW LOGIN */}
+      <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center", marginTop:16}}>
+        <Link href={"/signup" as any}>
+          <Text style={{color:"#64748b", fontWeight:"600", fontSize:13}}>Don't have account? <Text style={{color:"#0ABAB5", fontWeight:"800"}}>Sign Up</Text></Text>
+        </Link>
+
+        <TouchableOpacity onPress={()=> router.push("/forgot-password" as any)}>
+          <Text style={{color:"#0A1931", fontWeight:"700", fontSize:13}}>Forgot Password?</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
