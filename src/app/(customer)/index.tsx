@@ -1,12 +1,25 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator, Modal } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator, Modal, Vibration } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../../lib/supabase";
+import { notifyAdmins } from "../../../lib/notifications"; // FIX: import
 import { useRouter } from "expo-router";
+import * as Haptics from "expo-haptics";
+import { Audio } from "expo-av";
+import * as Notifications from "expo-notifications";
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  } as any),
+});
 
 const CATEGORIES = ["Water Supply","Pipes & Leaks","Taps & Faucets","Toilets","Drainage","Bathroom","Other"];
+const ESTATES = ["Westlands","Kasarani","Kilimani","CBD","Lavington","Karen","Embakasi","Parklands","South B","Eastlands","Langata","Rongai","Kileleshwa","Syokimau"];
 
 export default function Index() {
   const router = useRouter();
@@ -14,7 +27,7 @@ export default function Index() {
   const [loading, setLoading] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [form, setForm] = useState({
-    category: "", description: "", building: "", floor: "", unit: "", street: "", photos: [] as string[]
+    category: "", description: "", building: "", floor: "", unit: "", street: "", estate: "Westlands", photos: [] as string[]
   });
   const [jobId, setJobId] = useState("");
   const [showCamera, setShowCamera] = useState(false);
@@ -23,15 +36,81 @@ export default function Index() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
+  const [popup, setPopup] = useState<any>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+
+  const setupSound = async () => {
+    try {
+      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" }
+      );
+      soundRef.current = sound;
+    } catch(e){}
+  };
+  const triggerPopup = async (title: string, body: string, type: string) => {
+    setPopup({ title, body, type });
+    Vibration.vibrate([0, 300, 100, 300]);
+    try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
+    try { await soundRef.current?.replayAsync(); } catch {}
+    await Notifications.scheduleNotificationAsync({
+      content: { title, body, sound: true },
+      trigger: null,
+    });
+    setTimeout(()=> setPopup(null), 6000);
+  };
 
   useEffect(() => {
     const checkAuth = async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) router.replace("/login");
-      else setUser(session.user);
+      if (!session) {
+        router.replace("/login");
+        return;
+      }
+      setUser(session.user);
+      try {
+        let custEstate = null;
+        const { data: cust1 } = await supabase.from('customers').select('estate,location').eq('user_id', session.user.id).single();
+        if (cust1?.estate || cust1?.location) {
+          custEstate = cust1.estate || cust1.location;
+        } else {
+          const { data: cust2 } = await supabase.from('customers').select('estate,location').eq('id', session.user.id).single();
+          if (cust2?.estate || cust2?.location) {
+            custEstate = cust2.estate || cust2.location;
+          }
+        }
+        if (custEstate) {
+          setForm(prev => ({ ...prev, estate: custEstate, building: custEstate }));
+        }
+      } catch (e) {}
     };
     checkAuth();
+    setupSound();
+    Notifications.requestPermissionsAsync();
   }, []);
+
+  useEffect(() => {
+    if(!user?.id) return;
+    const channel = supabase.channel(`customer-live-${user.id}`)
+      .on('postgres_changes', { 
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'jobs',
+        filter: `customer_id=eq.${user.id}`
+      }, (payload) => {
+        const j = payload.new as any;
+        const old = payload.old as any;
+        if(j.status !== old?.status){
+          if(j.status === 'QUOTATION_PREPARED') triggerPopup("💰 Quotation Ready!", `Your job ${j.job_number} quotation is ready. Open My Jobs to approve.`, "QUOTE");
+          else if(j.status === 'ASSIGNED') triggerPopup("👷 Plumber Assigned!", `${j.job_number} assigned. Plumber is on the way.`, "ASSIGN");
+          else if(j.status === 'EN_ROUTE') triggerPopup("🚗 Plumber On The Way!", `Plumber for ${j.job_number} is en route to ${j.building_name}`, "ENROUTE");
+          else if(j.status === 'ARRIVED') triggerPopup("📍 Plumber Arrived!", `Work started for ${j.job_number}`, "ARRIVED");
+          else if(j.status === 'COMPLETED') triggerPopup("✅ Job Completed!", `${j.job_number} completed. Please rate.`, "DONE");
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); }
+  }, [user?.id]);
 
   const openCamera = async () => {
     if (form.photos.length >= 3) {
@@ -116,8 +195,8 @@ export default function Index() {
   };
 
   const submitReal = async () => {
-    if(!form.category ||!form.building ||!form.street) {
-      Alert.alert("Missing info","Building and Street required");
+    if(!form.category ||!form.building ||!form.street || !form.estate) {
+      Alert.alert("Missing info","Building, Street and Estate required");
       return;
     }
     setLoading(true);
@@ -127,12 +206,30 @@ export default function Index() {
       if(authUser){
         await supabase.from('customers').upsert({ id: authUser.id, email: authUser.email }, { onConflict: 'id' });
       }
-      const { data: job, error: jobError } = await supabase.from('jobs').insert({
-        job_number: jobNumber, category: form.category, description: form.description,
-        building_name: form.building, floor: form.floor, unit: form.unit, street: form.street,
-        status: 'UNDER_REVIEW', customer_id: user?.id || authUser?.id,
-      }).select().single();
-      if(jobError) throw jobError;
+
+      const jobPayload: any = {
+        job_number: jobNumber, 
+        category: form.category, 
+        description: form.description,
+        building_name: form.estate,
+        floor: form.floor, 
+        unit: form.unit, 
+        street: form.street,
+        status: 'UNDER_REVIEW', 
+        customer_id: user?.id || authUser?.id,
+        estate: form.estate,
+        location: form.estate,
+      };
+
+      let { data: job, error: jobError } = await supabase.from('jobs').insert(jobPayload).select().single();
+      
+      if(jobError && (jobError.message.includes('estate') || jobError.message.includes('location'))){
+        const { estate, location, ...fallback } = jobPayload;
+        const { data: job2, error: e2 } = await supabase.from('jobs').insert(fallback).select().single();
+        if(e2) throw e2;
+        job = job2;
+      } else if(jobError) throw jobError;
+
       for(let i=0; i<form.photos.length; i++){
         try {
           const uri = form.photos[i];
@@ -146,6 +243,15 @@ export default function Index() {
           await supabase.from('job_media').insert({ job_id: job.id, type: 'customer_upload', url: urlData.publicUrl });
         } catch(err){ console.log(err); }
       }
+
+      // FIX: Notify admin instantly - this triggers popup in admin app
+      await notifyAdmins(
+        `🚨 NEW JOB ${jobNumber}`,
+        `${form.category} in ${form.estate} - ${form.building}, ${form.street}`,
+        "NEW_JOB",
+        job.id
+      );
+
       setJobId(jobNumber); setStep(4);
       setTimeout(() => router.push("/(customer)/my-jobs"), 1500);
     } catch(e:any){ Alert.alert("Error", e.message); } finally { setLoading(false); }
@@ -157,16 +263,27 @@ export default function Index() {
         <Text style={{ fontSize:48, textAlign:"center" }}>✅</Text>
         <Text style={{ fontSize:22, fontWeight:"900", textAlign:"center", marginTop:12 }}>Request Sent!</Text>
         <Text style={{ textAlign:"center", marginTop:8, color:"#64748b" }}>Job ID: {jobId}</Text>
+        <Text style={{ textAlign:"center", marginTop:4, fontSize:12, color:"#0ABAB5" }}>Estate: {form.estate} - Auto-matching plumber</Text>
       </View>
     </View>
   );
 
   return (
     <>
-    {/* REMOVED DOUBLE HEADER - now handled by _layout.tsx */}
-    <ScrollView style={{ flex:1, backgroundColor:"white" }} contentContainerStyle={{ padding:20, paddingTop:20 }}>
+    {popup && (
+      <View style={{ position:"absolute", top:50, left:16, right:16, zIndex:9999, backgroundColor: popup.type==="QUOTE" ? "#0A1931" : popup.type==="ASSIGN" ? "#16a34a" : "#0ABAB5", borderRadius:16, padding:16, flexDirection:"row", alignItems:"center", elevation:10 }}>
+        <View style={{ backgroundColor:"white", width:40, height:40, borderRadius:20, justifyContent:"center", alignItems:"center" }}>
+          <Text style={{ fontSize:20 }}>{popup.type==="QUOTE" ? "💰" : popup.type==="ASSIGN" ? "👷" : "🔔"}</Text>
+        </View>
+        <View style={{ marginLeft:12, flex:1 }}>
+          <Text style={{ color:"white", fontWeight:"900", fontSize:13 }}>{popup.title}</Text>
+          <Text style={{ color:"#e2e8f0", fontSize:11, marginTop:2 }}>{popup.body}</Text>
+        </View>
+        <TouchableOpacity onPress={()=>setPopup(null)}><Ionicons name="close" size={18} color="white"/></TouchableOpacity>
+      </View>
+    )}
 
-      {/* Step indicator only */}
+    <ScrollView style={{ flex:1, backgroundColor:"white" }} contentContainerStyle={{ padding:20, paddingTop:20 }}>
       <View style={{ flexDirection:"row", gap:6, marginBottom:24 }}>
         {[1,2,3].map(i=><View key={i} style={{ flex:1, height:6, borderRadius:10, backgroundColor: i<=step? "#0ABAB5" : "#e2e8f0" }} />)}
       </View>
@@ -187,40 +304,37 @@ export default function Index() {
 
       {step===2 && (
         <View>
-          <Text style={{ fontSize:20, fontWeight:"800" }}>Describe + Photo</Text>
+          <Text style={{ fontSize:20, fontWeight:"800" }}>Describe + Location</Text>
           <TextInput placeholder="Describe issue..." value={form.description} onChangeText={t=>setForm({...form, description:t})}
             multiline style={{ borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:12, height:100, marginTop:16, textAlignVertical:"top" }} />
-
+          <Text style={{ fontSize:14, fontWeight:"800", marginTop:20 }}>Select Estate / Region *</Text>
+          <Text style={{ fontSize:11, color:"#64748b", marginTop:2 }}>We will assign plumber from same area</Text>
+          <View style={{ flexDirection:"row", flexWrap:"wrap", gap:8, marginTop:10 }}>
+            {ESTATES.map(est=>(
+              <TouchableOpacity key={est} onPress={()=>setForm({...form, estate: est, building: est})} style={{ backgroundColor: form.estate===est ? "#0A1931" : "#f1f5f9", paddingHorizontal:12, paddingVertical:8, borderRadius:20, borderWidth: form.estate===est ? 2 : 1, borderColor: form.estate===est ? "#FACC15" : "#e2e8f0" }}>
+                <Text style={{ color: form.estate===est ? "white" : "#334155", fontSize:11, fontWeight:"700" }}>{est}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
           <TouchableOpacity onPress={openCamera} style={{ borderWidth:2, borderStyle:"dashed", borderColor:"#0ABAB5", backgroundColor:"#f0fdfa", borderRadius:12, padding:20, alignItems:"center", marginTop:16 }}>
             <Text style={{ fontSize:28 }}>📸</Text>
             <Text style={{ fontWeight:"700", marginTop:6, color:"#0ABAB5" }}>Take Live Photo</Text>
-            <Text style={{ fontSize:10, color:"#64748b", marginTop:2 }}>{form.photos.length}/3 photos • Tap photo to edit</Text>
+            <Text style={{ fontSize:10, color:"#64748b", marginTop:2 }}>{form.photos.length}/3 photos</Text>
           </TouchableOpacity>
-
           <View style={{ flexDirection:"row", gap:10, marginTop:14, flexWrap:"wrap" }}>
             {form.photos.map((uri,i)=>(
               <View key={i} style={{ width:80, height:80 }}>
-                <TouchableOpacity onPress={() => openEditor(uri, i)} activeOpacity={0.8} style={{ width:80, height:80, borderRadius:12, overflow:"hidden", borderWidth:1, borderColor:"#e2e8f0" }}>
+                <TouchableOpacity onPress={() => openEditor(uri, i)} style={{ width:80, height:80, borderRadius:12, overflow:"hidden", borderWidth:1, borderColor:"#e2e8f0" }}>
                   <Image source={{uri}} style={{ width:80, height:80 }} />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => removePhoto(i)} style={{ position:"absolute", top:-6, right:-6, backgroundColor:"black", width:22, height:22, borderRadius:11, alignItems:"center", justifyContent:"center" }}>
                   <Ionicons name="close" size={14} color="white" />
                 </TouchableOpacity>
-                <View style={{ position:"absolute", bottom:-6, left:-6, backgroundColor:"#0ABAB5", width:22, height:22, borderRadius:11, alignItems:"center", justifyContent:"center" }}>
-                  <Ionicons name="pencil" size={12} color="white" />
-                </View>
               </View>
             ))}
-            {form.photos.length > 0 && form.photos.length < 3 && (
-              <TouchableOpacity onPress={openCamera} style={{ width:80, height:80, borderRadius:12, borderWidth:1, borderStyle:"dashed", borderColor:"#0ABAB5", backgroundColor:"#f0fdfa", alignItems:"center", justifyContent:"center" }}>
-                <Ionicons name="add" size={24} color="#0ABAB5" />
-                <Text style={{ fontSize:10, color:"#0ABAB5", fontWeight:"700", marginTop:2 }}>Add</Text>
-              </TouchableOpacity>
-            )}
           </View>
-
           <View style={{ gap:10, marginTop:20 }}>
-            <TextInput placeholder="Building Name *" value={form.building} onChangeText={t=>setForm({...form, building:t})} style={{ borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:12 }} />
+            <TextInput placeholder="Building Name / Apartment *" value={form.building} onChangeText={t=>setForm({...form, building:t})} style={{ borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:12 }} />
             <View style={{ flexDirection:"row", gap:10 }}>
               <TextInput placeholder="Street *" value={form.street} onChangeText={t=>setForm({...form, street:t})} style={{ flex:1, borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:12 }} />
               <TextInput placeholder="Floor" value={form.floor} onChangeText={t=>setForm({...form, floor:t})} style={{ flex:1, borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:12 }} />
@@ -239,13 +353,11 @@ export default function Index() {
         <View>
           <Text style={{ fontSize:20, fontWeight:"800" }}>Confirm Request</Text>
           <View style={{ backgroundColor:"#f8fafc", padding:16, borderRadius:12, marginTop:16, borderWidth:1, borderColor:"#e2e8f0" }}>
-            <Text style={{ fontSize:14, lineHeight:22 }}>Category: {form.category}{"\n"}Building: {form.building}{"\n"}Street: {form.street}{"\n"}Photos: {form.photos.length} live</Text>
-          </View>
-          <ScrollView horizontal style={{ marginTop:12 }}>
-            <View style={{ flexDirection:"row", gap:8 }}>
-              {form.photos.map((uri,i)=><Image key={i} source={{uri}} style={{ width:70, height:70, borderRadius:8 }} />)}
+            <Text style={{ fontSize:14, lineHeight:22 }}>Category: {form.category}{"\n"}Estate: {form.estate}{"\n"}Building: {form.building}{"\n"}Street: {form.street}{"\n"}Photos: {form.photos.length}</Text>
+            <View style={{ backgroundColor:"#dcfce7", padding:8, borderRadius:8, marginTop:10 }}>
+              <Text style={{ fontSize:11, fontWeight:"700", color:"#16a34a" }}>✅ Plumber from {form.estate} will be auto-assigned</Text>
             </View>
-          </ScrollView>
+          </View>
           <View style={{ flexDirection:"row", gap:10, marginTop:24 }}>
             <TouchableOpacity onPress={()=>setStep(2)} style={{ flex:1, borderWidth:1, borderColor:"#e2e8f0", padding:16, borderRadius:12 }}><Text style={{ textAlign:"center" }}>Edit</Text></TouchableOpacity>
             <TouchableOpacity onPress={submitReal} disabled={loading} style={{ flex:1, backgroundColor:"#0ABAB5", padding:16, borderRadius:12 }}>
@@ -279,18 +391,9 @@ export default function Index() {
         </View>
         {editingUri && <Image source={{ uri: editingUri }} style={{ flex:1 }} resizeMode="contain" />}
         <View style={{ backgroundColor:"white", borderTopLeftRadius:24, borderTopRightRadius:24, padding:20 }}>
-          <View style={{ flexDirection:"row", justifyContent:"space-around", marginBottom:20 }}>
-            <TouchableOpacity onPress={rotateEditing} style={{ alignItems:"center" }}>
-              <View style={{ backgroundColor:"#f1f5f9", padding:14, borderRadius:30 }}><Ionicons name="refresh" size={22} /></View>
-              <Text style={{ marginTop:6, fontSize:12, fontWeight:"600" }}>Rotate</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={retakePhoto} style={{ alignItems:"center" }}>
-              <View style={{ backgroundColor:"#f1f5f9", padding:14, borderRadius:30 }}><Ionicons name="camera-reverse" size={22} /></View>
-              <Text style={{ marginTop:6, fontSize:12, fontWeight:"600" }}>Retake</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => { if(editingIndex!==null) removePhoto(editingIndex); setEditorOpen(false); }} style={{ alignItems:"center" }}>
-              <View style={{ backgroundColor:"#fee2e2", padding:14, borderRadius:30 }}><Ionicons name="trash" size={22} color="#ef4444" /></View>
-              <Text style={{ marginTop:6, fontSize:12, fontWeight:"600", color:"#ef4444" }}>Remove</Text>
+          <View style={{ flexDirection:"row", gap:10, marginBottom:10 }}>
+            <TouchableOpacity onPress={rotateEditing} style={{ flex:1, backgroundColor:"#f1f5f9", padding:14, borderRadius:12, alignItems:"center" }}>
+              <Text style={{ fontWeight:"700" }}>↻ Rotate</Text>
             </TouchableOpacity>
           </View>
           <View style={{ flexDirection:"row", gap:10 }}>
