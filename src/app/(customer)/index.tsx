@@ -8,25 +8,33 @@ import { notifyAdmins } from "../../../lib/notifications";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 
-// SAFE NATIVE MODULES
+// FIXED: No crash in Expo Go or APK
 let Audio: any = null;
 let Notifications: any = null;
-if (Platform.OS !== 'web') {
-  try {
-    const Constants = require('expo-constants').default;
-    const isExpoGo = Constants?.appOwnership === 'expo' || Constants?.executionEnvironment === 'storeClient';
-    if (!isExpoGo) {
-      Audio = require('expo-av').Audio;
-      Notifications = require('expo-notifications');
+
+try {
+  if (Platform.OS !== 'web') {
+    Audio = require('expo-av').Audio;
+  }
+} catch (e) {
+  console.log('Audio not available in Expo Go, skipping');
+}
+
+try {
+  if (Platform.OS !== 'web') {
+    Notifications = require('expo-notifications');
+    try {
       Notifications.setNotificationHandler({
         handleNotification: async () => ({
           shouldShowAlert: true,
           shouldPlaySound: true,
           shouldSetBadge: true,
-        } as any),
+        }),
       });
-    }
-  } catch (e) {}
+    } catch {}
+  }
+} catch (e) {
+  console.log('Notifications not available');
 }
 
 const CATEGORIES = ["Water Supply","Pipes & Leaks","Taps & Faucets","Toilets","Drainage","Bathroom","Other"];
@@ -58,7 +66,7 @@ export default function Index() {
         { uri: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" }
       );
       soundRef.current = sound;
-    } catch(e){}
+    } catch(e){ console.log('Sound setup failed', e); }
   };
 
   const triggerPopup = async (title: string, body: string, type: string) => {
@@ -86,7 +94,6 @@ export default function Index() {
       }
       setUser(session.user);
       try {
-        // FIX: customers table uses id = auth.id, not user_id
         const { data: cust } = await supabase.from('customers').select('estate,location').eq('id', session.user.id).single();
         if (cust?.estate || cust?.location) {
           const custEstate = cust.estate || cust.location;
@@ -97,7 +104,9 @@ export default function Index() {
     checkAuth();
     setupSound();
     if (Notifications) {
-      try { Notifications.requestPermissionsAsync(); } catch {}
+      try { 
+        Notifications.requestPermissionsAsync().catch(()=>{});
+      } catch {}
     }
   }, []);
 
@@ -217,7 +226,6 @@ export default function Index() {
       const { data: { user: authUser } } = await supabase.auth.getUser();
       if(!authUser) throw new Error("Not logged in");
 
-      // === FINAL FIX: Always use auth.id as customers.id ===
       const { data: existingCust } = await supabase
         .from('customers')
         .select('id')
@@ -239,13 +247,13 @@ export default function Index() {
         job_number: jobNumber, 
         category: form.category, 
         description: form.description,
-        building_name: form.building, // FIXED: was form.estate
+        building_name: form.building,
         floor: form.floor, 
         unit: form.unit, 
         street: form.street,
         status: 'UNDER_REVIEW', 
-        customer_id: authUser.id, // FIXED: Always auth id
-        customer_email: authUser.email, // FIXED: Always save email
+        customer_id: authUser.id,
+        customer_email: authUser.email,
         estate: form.estate,
         location: form.estate,
       };
