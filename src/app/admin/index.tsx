@@ -6,8 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import AdminJobTimeline from "./job-timeline";
 
-// FIXED FOR EXPO GO + APK - safe Audio + Notifications - NO CRASH
-let Audio: any = null;
+// FIXED: Removed expo-av to fix R8 build error - no interference
 let Notifications: any = null;
 let isExpoGoFlagAdmin = true;
 if (Platform.OS !== 'web') {
@@ -16,14 +15,6 @@ if (Platform.OS !== 'web') {
     const isExpoGo = Constants?.appOwnership === 'expo' || Constants?.executionEnvironment === 'storeClient';
     isExpoGoFlagAdmin = isExpoGo;
     if (!isExpoGo) {
-      try {
-        try {
-          const AudioMod = require('expo-audio');
-          Audio = AudioMod;
-        } catch {
-          Audio = require('expo-av').Audio;
-        }
-      } catch {}
       Notifications = require('expo-notifications');
       (async () => {
         try {
@@ -49,7 +40,6 @@ if (Platform.OS !== 'web') {
       })();
     }
   } catch {
-    Audio = null;
     Notifications = null;
     isExpoGoFlagAdmin = true;
   }
@@ -78,7 +68,6 @@ export default function Admin() {
   const [editPlumberModal, setEditPlumberModal] = useState<any>(null); const [editCustomerModal, setEditCustomerModal] = useState<any>(null);
   const [search, setSearch] = useState(""); const [pError, setPError] = useState(""); const [pSuccess, setPSuccess] = useState(""); const [isLive, setIsLive] = useState(false); const [lastUpdate, setLastUpdate] = useState<string>(""); const [newJobAlert, setNewJobAlert] = useState<any>(null);
   const [inquiries, setInquiries] = useState<any[]>([]);
-  const soundRef = useRef<any>(null);
 
   const getStatusColor = (status: string) => {
     switch(status){
@@ -116,23 +105,8 @@ export default function Admin() {
     }catch(e:any){ console.error(e); } finally { if(showLoader) setLoading(false); }
   };
 
-  const setupSound = async () => {
-    if (!Audio) return;
-    try {
-      if (Audio.Sound === undefined && Audio.AudioPlayer) {
-        return;
-      }
-      if (Audio.setAudioModeAsync) {
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-        const { sound } = await Audio.Sound.createAsync({ uri: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" }, { shouldPlay: false });
-        soundRef.current = sound;
-      }
-    } catch(e){}
-  };
-  const playSound = async () => { 
-    if (!Audio || !Audio.Sound) return; 
-    try { await soundRef.current?.replayAsync(); } catch(e){} 
-  };
+  const setupSound = async () => { return; };
+  const playSound = async () => { return; };
 
   useEffect(()=>{ 
     fetchJobs(true); setupSound();
@@ -169,7 +143,7 @@ export default function Admin() {
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, () => fetchJobs())
       .subscribe((status) => { if(status === 'SUBSCRIBED') setIsLive(true); });
-    return () => { supabase.removeChannel(channel); try { soundRef.current?.unloadAsync(); } catch {} setIsLive(false); }
+    return () => { supabase.removeChannel(channel); setIsLive(false); }
   }, []);
 
   const formatPhoneForWhatsApp = (phone: string) => {

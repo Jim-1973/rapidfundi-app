@@ -8,18 +8,8 @@ import { notifyAdmins } from "../../../lib/notifications";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
 
-// FIXED: No crash in Expo Go or APK
-let Audio: any = null;
+// FIXED: No expo-av - fixes R8 build error
 let Notifications: any = null;
-
-try {
-  if (Platform.OS !== 'web') {
-    Audio = require('expo-av').Audio;
-  }
-} catch (e) {
-  console.log('Audio not available in Expo Go, skipping');
-}
-
 try {
   if (Platform.OS !== 'web') {
     Notifications = require('expo-notifications');
@@ -56,24 +46,15 @@ export default function Index() {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [popup, setPopup] = useState<any>(null);
-  const soundRef = useRef<any>(null);
 
   const setupSound = async () => {
-    if (!Audio) return;
-    try {
-      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" }
-      );
-      soundRef.current = sound;
-    } catch(e){ console.log('Sound setup failed', e); }
+    return;
   };
 
   const triggerPopup = async (title: string, body: string, type: string) => {
     setPopup({ title, body, type });
     if(Platform.OS !== 'web') Vibration.vibrate([0, 300, 100, 300]);
     try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
-    try { await soundRef.current?.replayAsync(); } catch {}
     if (Notifications) {
       try {
         await Notifications.scheduleNotificationAsync({
