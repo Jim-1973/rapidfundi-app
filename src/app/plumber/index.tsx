@@ -9,22 +9,40 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 
 let Notifications: any = null;
+let isExpoGoFlag = true;
 if (Platform.OS !== 'web') {
   try {
     const Constants = require('expo-constants').default;
     const isExpoGo = Constants?.appOwnership === 'expo' || Constants?.executionEnvironment === 'storeClient';
+    isExpoGoFlag = isExpoGo;
     if (!isExpoGo) {
       Notifications = require('expo-notifications');
-      Notifications.setNotificationHandler({
-        handleNotification: async () => ({
-          shouldShowAlert: true,
-          shouldPlaySound: true,
-          shouldSetBadge: true,
-        } as any),
-      });
+      (async () => {
+        try {
+          await new Promise(res => setTimeout(res, 1200));
+          if (Notifications?.setNotificationHandler) {
+            Notifications.setNotificationHandler({
+              handleNotification: async () => ({
+                shouldShowAlert: true,
+                shouldPlaySound: true,
+                shouldSetBadge: true,
+              } as any),
+            });
+          }
+          if (Platform.OS === 'android' && Notifications?.setNotificationChannelAsync) {
+            await Notifications.setNotificationChannelAsync('default', {
+              name: 'RapidFundi Plumber',
+              importance: Notifications.AndroidImportance?.MAX || 5,
+              vibrationPattern: [0, 250, 250, 250],
+              sound: 'default',
+            }).catch(() => {});
+          }
+        } catch {}
+      })();
     }
   } catch {
     Notifications = null;
+    isExpoGoFlag = true;
   }
 }
 
@@ -496,7 +514,6 @@ export default function PlumberApp() {
 
   if(!authChecked) return <View style={{flex:1, justifyContent:"center", alignItems:"center", backgroundColor:"#f8fafc"}}><ActivityIndicator color="#0A1931"/></View>;
 
-  // COMPLETED SUMMARY - NO EARNINGS
   if(completedSummary){
     const isAwaitingPayment = completedSummary.status === 'completed_awaiting_payment';
     return (
@@ -549,7 +566,6 @@ export default function PlumberApp() {
     )
   }
 
-  // SELECTED JOB VIEW - NO EARNINGS
   if(selected){
     const custLat = selected.customer_lat || (selected as any).latitude;
     const custLng = selected.customer_lng || (selected as any).longitude;

@@ -9,6 +9,8 @@
     "platforms": ["ios", "android", "web"],
     "android": {
       "package": "com.rapidfundi.app",
+      "versionCode": 3,
+      "minSdkVersion": 21,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
@@ -72,7 +74,8 @@
         {
           "android": {
             "enableMinifyInReleaseBuilds": false,
-            "enableProguardInReleaseBuilds": false
+            "enableProguardInReleaseBuilds": false,
+            "minSdkVersion": 21
           }
         }
       ]
