@@ -6,11 +6,6 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "splash": {
-      "image": "./assets/images/splash-icon.png",
-      "backgroundColor": "#ffffff",
-      "resizeMode": "contain"
-    },
     "platforms": ["ios", "android", "web"],
     "android": {
       "package": "com.rapidfundi.app",
@@ -38,6 +33,15 @@
       }
     },
     "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "backgroundColor": "#ffffff",
+          "imageWidth": 200,
+          "resizeMode": "contain"
+        }
+      ],
       [
         "expo-camera",
         {
