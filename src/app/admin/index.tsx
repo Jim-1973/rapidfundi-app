@@ -6,25 +6,53 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import AdminJobTimeline from "./job-timeline";
 
-// FIXED FOR EXPO GO - safe Audio + Notifications (MUST KEEP THIS CHECK)
+// FIXED FOR EXPO GO + APK - safe Audio + Notifications - NO CRASH
 let Audio: any = null;
 let Notifications: any = null;
+let isExpoGoFlagAdmin = true;
 if (Platform.OS !== 'web') {
   try {
     const Constants = require('expo-constants').default;
     const isExpoGo = Constants?.appOwnership === 'expo' || Constants?.executionEnvironment === 'storeClient';
+    isExpoGoFlagAdmin = isExpoGo;
     if (!isExpoGo) {
-      Audio = require('expo-av').Audio;
+      try {
+        try {
+          const AudioMod = require('expo-audio');
+          Audio = AudioMod;
+        } catch {
+          Audio = require('expo-av').Audio;
+        }
+      } catch {}
       Notifications = require('expo-notifications');
-      Notifications.setNotificationHandler({
-        handleNotification: async () => ({
-          shouldShowAlert: true,
-          shouldPlaySound: true,
-          shouldSetBadge: true,
-        } as any),
-      });
+      (async () => {
+        try {
+          await new Promise(res => setTimeout(res, 1500));
+          if (Notifications?.setNotificationHandler) {
+            Notifications.setNotificationHandler({
+              handleNotification: async () => ({
+                shouldShowAlert: true,
+                shouldPlaySound: true,
+                shouldSetBadge: true,
+              } as any),
+            });
+          }
+          if (Platform.OS === 'android' && Notifications?.setNotificationChannelAsync) {
+            await Notifications.setNotificationChannelAsync('default', {
+              name: 'RapidFundi Admin',
+              importance: Notifications.AndroidImportance?.MAX || 5,
+              vibrationPattern: [0, 250, 250, 250],
+              sound: 'default',
+            }).catch(() => {});
+          }
+        } catch {}
+      })();
     }
-  } catch {}
+  } catch {
+    Audio = null;
+    Notifications = null;
+    isExpoGoFlagAdmin = true;
+  }
 }
 
 const W = Dimensions.get("window").width;
@@ -91,12 +119,20 @@ export default function Admin() {
   const setupSound = async () => {
     if (!Audio) return;
     try {
-      await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
-      const { sound } = await Audio.Sound.createAsync({ uri: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" }, { shouldPlay: false });
-      soundRef.current = sound;
+      if (Audio.Sound === undefined && Audio.AudioPlayer) {
+        return;
+      }
+      if (Audio.setAudioModeAsync) {
+        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+        const { sound } = await Audio.Sound.createAsync({ uri: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" }, { shouldPlay: false });
+        soundRef.current = sound;
+      }
     } catch(e){}
   };
-  const playSound = async () => { if (!Audio) return; try { await soundRef.current?.replayAsync(); } catch(e){} };
+  const playSound = async () => { 
+    if (!Audio || !Audio.Sound) return; 
+    try { await soundRef.current?.replayAsync(); } catch(e){} 
+  };
 
   useEffect(()=>{ 
     fetchJobs(true); setupSound();
@@ -336,7 +372,6 @@ export default function Admin() {
 
   if(selected){
     const c = getStatusColor(selected.status);
-    // FIXED: exact same region logic as initially - case-insensitive match on building_name, estate, street
     const sameRegionPlumbers = plumbers.filter(p=>p.active && (
       p.estate?.toLowerCase() === selected.building_name?.toLowerCase() || 
       p.location?.toLowerCase() === selected.building_name?.toLowerCase() ||
@@ -417,7 +452,6 @@ export default function Admin() {
           </View>
         ) : null}
 
-        {/* === RESTORED ASSIGN PLUMBER AS IT WAS INITIALLY === */}
         {selected.status === 'QUOTATION_APPROVED' && (
           <View style={{ backgroundColor:"#f0fdfa", padding:16, borderRadius:16, marginTop:20, borderWidth:1, borderColor:"#0ABAB5" }}>
             <Text style={{ fontWeight:"900", fontSize:16 }}>Admin Assign Plumber - Manual</Text>
