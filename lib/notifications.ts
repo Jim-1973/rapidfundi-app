@@ -6,34 +6,43 @@ let Notifications: any = null;
 let isExpoGo = true;
 
 // Try to load native module only if NOT in Expo Go
-// We detect Expo Go by checking if Constants.appOwnership is 'expo'
 try {
-  // This dynamic check prevents bundler from including native code in Expo Go
   if (Platform.OS !== 'web') {
     const Constants = require('expo-constants').default;
     if (Constants?.appOwnership !== 'expo' && Constants?.executionEnvironment !== 'storeClient') {
       isExpoGo = false;
-      // Only in custom dev build - safe to require
       Notifications = require('expo-notifications');
-      Notifications.setNotificationHandler({
-        handleNotification: async () => ({
-          shouldShowAlert: true,
-          shouldPlaySound: true,
-          shouldSetBadge: false,
-        } as any),
-      });
-      if (Platform.OS === 'android') {
-        Notifications.setNotificationChannelAsync('default', {
-          name: 'RapidFundi Alerts',
-          importance: Notifications.AndroidImportance?.MAX || 5,
-          vibrationPattern: [0, 250, 250, 250],
-          sound: 'default',
+      
+      // Handler - safe
+      try {
+        Notifications.setNotificationHandler({
+          handleNotification: async () => ({
+            shouldShowAlert: true,
+            shouldPlaySound: true,
+            shouldSetBadge: false,
+          } as any),
         });
+      } catch {}
+
+      // Channel - LAZY & SAFE (this was crashing your APK)
+      if (Platform.OS === 'android') {
+        (async () => {
+          try {
+            await new Promise(res => setTimeout(res, 1000)); // wait for native to init
+            if (Notifications?.setNotificationChannelAsync) {
+              await Notifications.setNotificationChannelAsync('default', {
+                name: 'RapidFundi Alerts',
+                importance: Notifications.AndroidImportance?.MAX || 5,
+                vibrationPattern: [0, 250, 250, 250],
+                sound: 'default',
+              }).catch(() => {});
+            }
+          } catch {}
+        })();
       }
     }
   }
 } catch (e) {
-  // Expo Go - stay in DB-only mode
   Notifications = null;
   isExpoGo = true;
 }
