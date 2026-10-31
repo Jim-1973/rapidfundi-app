@@ -9,12 +9,11 @@
     "platforms": ["ios", "android", "web"],
     "android": {
       "package": "com.rapidfundi.app",
-      "versionCode": 3,
-      "minSdkVersion": 21,
+      "versionCode": 4,
+      "minSdkVersion": 24,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundImage": "./assets/images/android-icon-background.png"
       },
       "permissions": [
         "android.permission.CAMERA",
@@ -75,7 +74,12 @@
           "android": {
             "enableMinifyInReleaseBuilds": false,
             "enableProguardInReleaseBuilds": false,
-            "minSdkVersion": 21
+            "minSdkVersion": 24,
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35
+          },
+          "ios": {
+            "deploymentTarget": "15.1"
           }
         }
       ]
