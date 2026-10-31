@@ -1,22 +1,33 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator, Modal, Vibration } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, ScrollView, Image, Alert, ActivityIndicator, Modal, Vibration, Platform } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../../lib/supabase";
-import { notifyAdmins } from "../../../lib/notifications"; // FIX: import
+import { notifyAdmins } from "../../../lib/notifications";
 import { useRouter } from "expo-router";
 import * as Haptics from "expo-haptics";
-import { Audio } from "expo-av";
-import * as Notifications from "expo-notifications";
 
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-  } as any),
-});
+// SAFE NATIVE MODULES
+let Audio: any = null;
+let Notifications: any = null;
+if (Platform.OS !== 'web') {
+  try {
+    const Constants = require('expo-constants').default;
+    const isExpoGo = Constants?.appOwnership === 'expo' || Constants?.executionEnvironment === 'storeClient';
+    if (!isExpoGo) {
+      Audio = require('expo-av').Audio;
+      Notifications = require('expo-notifications');
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+        } as any),
+      });
+    }
+  } catch (e) {}
+}
 
 const CATEGORIES = ["Water Supply","Pipes & Leaks","Taps & Faucets","Toilets","Drainage","Bathroom","Other"];
 const ESTATES = ["Westlands","Kasarani","Kilimani","CBD","Lavington","Karen","Embakasi","Parklands","South B","Eastlands","Langata","Rongai","Kileleshwa","Syokimau"];
@@ -37,9 +48,10 @@ export default function Index() {
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [popup, setPopup] = useState<any>(null);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const soundRef = useRef<any>(null);
 
   const setupSound = async () => {
+    if (!Audio) return;
     try {
       await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
       const { sound } = await Audio.Sound.createAsync(
@@ -48,15 +60,20 @@ export default function Index() {
       soundRef.current = sound;
     } catch(e){}
   };
+
   const triggerPopup = async (title: string, body: string, type: string) => {
     setPopup({ title, body, type });
-    Vibration.vibrate([0, 300, 100, 300]);
+    if(Platform.OS !== 'web') Vibration.vibrate([0, 300, 100, 300]);
     try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch {}
     try { await soundRef.current?.replayAsync(); } catch {}
-    await Notifications.scheduleNotificationAsync({
-      content: { title, body, sound: true },
-      trigger: null,
-    });
+    if (Notifications) {
+      try {
+        await Notifications.scheduleNotificationAsync({
+          content: { title, body, sound: true },
+          trigger: null,
+        });
+      } catch {}
+    }
     setTimeout(()=> setPopup(null), 6000);
   };
 
@@ -69,24 +86,19 @@ export default function Index() {
       }
       setUser(session.user);
       try {
-        let custEstate = null;
-        const { data: cust1 } = await supabase.from('customers').select('estate,location').eq('user_id', session.user.id).single();
-        if (cust1?.estate || cust1?.location) {
-          custEstate = cust1.estate || cust1.location;
-        } else {
-          const { data: cust2 } = await supabase.from('customers').select('estate,location').eq('id', session.user.id).single();
-          if (cust2?.estate || cust2?.location) {
-            custEstate = cust2.estate || cust2.location;
-          }
-        }
-        if (custEstate) {
-          setForm(prev => ({ ...prev, estate: custEstate, building: custEstate }));
+        // FIX: customers table uses id = auth.id, not user_id
+        const { data: cust } = await supabase.from('customers').select('estate,location').eq('id', session.user.id).single();
+        if (cust?.estate || cust?.location) {
+          const custEstate = cust.estate || cust.location;
+          setForm(prev => ({ ...prev, estate: custEstate }));
         }
       } catch (e) {}
     };
     checkAuth();
     setupSound();
-    Notifications.requestPermissionsAsync();
+    if (Notifications) {
+      try { Notifications.requestPermissionsAsync(); } catch {}
+    }
   }, []);
 
   useEffect(() => {
@@ -203,20 +215,37 @@ export default function Index() {
     try {
       const jobNumber = `RF-${new Date().getFullYear()}-${Math.floor(Math.random()*900000)+100000}`;
       const { data: { user: authUser } } = await supabase.auth.getUser();
-      if(authUser){
-        await supabase.from('customers').upsert({ id: authUser.id, email: authUser.email }, { onConflict: 'id' });
+      if(!authUser) throw new Error("Not logged in");
+
+      // === FINAL FIX: Always use auth.id as customers.id ===
+      const { data: existingCust } = await supabase
+        .from('customers')
+        .select('id')
+        .eq('id', authUser.id)
+        .maybeSingle();
+
+      if (!existingCust) {
+        await supabase.from('customers').insert({
+          id: authUser.id,
+          email: authUser.email,
+          full_name: (user as any)?.full_name || authUser.email?.split('@')[0] || 'Customer',
+          role: 'customer',
+          estate: form.estate,
+          location: form.estate
+        });
       }
 
       const jobPayload: any = {
         job_number: jobNumber, 
         category: form.category, 
         description: form.description,
-        building_name: form.estate,
+        building_name: form.building, // FIXED: was form.estate
         floor: form.floor, 
         unit: form.unit, 
         street: form.street,
         status: 'UNDER_REVIEW', 
-        customer_id: user?.id || authUser?.id,
+        customer_id: authUser.id, // FIXED: Always auth id
+        customer_email: authUser.email, // FIXED: Always save email
         estate: form.estate,
         location: form.estate,
       };
@@ -244,7 +273,6 @@ export default function Index() {
         } catch(err){ console.log(err); }
       }
 
-      // FIX: Notify admin instantly - this triggers popup in admin app
       await notifyAdmins(
         `🚨 NEW JOB ${jobNumber}`,
         `${form.category} in ${form.estate} - ${form.building}, ${form.street}`,

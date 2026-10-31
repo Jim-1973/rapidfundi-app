@@ -1,26 +1,45 @@
 import { supabase } from "./supabase";
-import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
-// Setup handler once
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  } as any),
-});
+// NO native require here - Expo Go crashes if we do
+let Notifications: any = null;
+let isExpoGo = true;
 
-if (Platform.OS === 'android') {
-  Notifications.setNotificationChannelAsync('default', {
-    name: 'RapidFundi Alerts',
-    importance: Notifications.AndroidImportance.MAX,
-    vibrationPattern: [0, 250, 250, 250],
-    sound: 'default',
-  });
+// Try to load native module only if NOT in Expo Go
+// We detect Expo Go by checking if Constants.appOwnership is 'expo'
+try {
+  // This dynamic check prevents bundler from including native code in Expo Go
+  if (Platform.OS !== 'web') {
+    const Constants = require('expo-constants').default;
+    if (Constants?.appOwnership !== 'expo' && Constants?.executionEnvironment !== 'storeClient') {
+      isExpoGo = false;
+      // Only in custom dev build - safe to require
+      Notifications = require('expo-notifications');
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldPlaySound: true,
+          shouldSetBadge: false,
+        } as any),
+      });
+      if (Platform.OS === 'android') {
+        Notifications.setNotificationChannelAsync('default', {
+          name: 'RapidFundi Alerts',
+          importance: Notifications.AndroidImportance?.MAX || 5,
+          vibrationPattern: [0, 250, 250, 250],
+          sound: 'default',
+        });
+      }
+    }
+  }
+} catch (e) {
+  // Expo Go - stay in DB-only mode
+  Notifications = null;
+  isExpoGo = true;
 }
 
-// BASE - saves to DB + fires OS push instantly
+console.log(`Notifications mode: ${isExpoGo ? 'DB-only (Expo Go)' : 'Native (Dev Build)'}`);
+
 export async function sendNotification(params: {
   user_id: string;
   role?: string;
@@ -40,21 +59,24 @@ export async function sendNotification(params: {
   });
   if (error) console.log("Notification error", error);
 
-  // Instant OS popup even if app in background
+  // Instant OS popup - only works in dev build
   try {
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: params.title,
-        body: params.message,
-        data: { job_id: params.job_id, type: params.type },
-        sound: 'default',
-      },
-      trigger: null,
-    });
-  } catch (e) {}
+    if (Notifications && !isExpoGo) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: params.title,
+          body: params.message,
+          data: { job_id: params.job_id, type: params.type },
+          sound: 'default',
+        },
+        trigger: null,
+      });
+    }
+  } catch (e) {
+    console.log("OS push failed (expected in Expo Go)", e);
+  }
 }
 
-// COMPAT for your old admin code - admin/index.tsx calls these
 export async function notifyCustomer(userId: string, title: string, message: string, type: string, job_id?: string) {
   return sendNotification({ user_id: userId, role: 'customer', title, message, type, job_id });
 }
@@ -63,34 +85,35 @@ export async function notifyPlumber(userId: string, title: string, message: stri
   return sendNotification({ user_id: userId, role: 'plumber', title, message, type, job_id });
 }
 
-// FIXED ADMIN - inserts with role=admin so admin panel can listen by role, plus fires OS push
 export async function notifyAdmins(title: string, message: string, type: string, job_id?: string) {
-  // 1. Save for admin panel (filter by role=admin)
-  await supabase.from('notifications').insert({
+  const { error } = await supabase.from('notifications').insert({
     role: 'admin',
     title,
     message,
     type,
     job_id,
-    user_id: '00000000-0000-0000-0000-000000000000', // dummy but role is what matters
+    user_id: '00000000-0000-0000-0000-000000000000',
     is_read: false
   } as any);
+  if (error) console.log("Admin notify error", error);
 
-  // 2. Instant OS push for any admin with app open (realtime on jobs table already handles it too)
   try {
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title,
-        body: message,
-        data: { job_id, type },
-        sound: 'default',
-      },
-      trigger: null,
-    });
+    if (Notifications && !isExpoGo) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title,
+          body: message,
+          data: { job_id, type },
+          sound: 'default',
+        },
+        trigger: null,
+      });
+    }
   } catch {}
 }
 
-// NEW: For NotificationBell.tsx - auto update without refresh
+export const notifyAdmin = notifyAdmins;
+
 export function subscribeToNotifications(userId: string, callback: (n: any) => void) {
   return supabase
     .channel(`notifs-${userId}`)
@@ -101,7 +124,6 @@ export function subscribeToNotifications(userId: string, callback: (n: any) => v
     .subscribe();
 }
 
-// NEW: For Admin - listen by role=admin
 export function subscribeToAdminNotifications(callback: (n: any) => void) {
   return supabase
     .channel('admin-notifs')
@@ -111,3 +133,5 @@ export function subscribeToAdminNotifications(callback: (n: any) => void) {
     )
     .subscribe();
 }
+
+export { Notifications, isExpoGo };

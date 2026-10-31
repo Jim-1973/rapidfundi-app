@@ -4,19 +4,26 @@ import { supabase, supabaseTemp } from "../../../lib/supabase";
 import { notifyCustomer, notifyPlumber } from "../../../lib/notifications";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { Audio } from "expo-av";
+import AdminJobTimeline from "./job-timeline";
 
+// FIXED FOR EXPO GO - safe Audio + Notifications (MUST KEEP THIS CHECK)
+let Audio: any = null;
 let Notifications: any = null;
 if (Platform.OS !== 'web') {
   try {
-    Notifications = require('expo-notifications');
-    Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-      } as any),
-    });
+    const Constants = require('expo-constants').default;
+    const isExpoGo = Constants?.appOwnership === 'expo' || Constants?.executionEnvironment === 'storeClient';
+    if (!isExpoGo) {
+      Audio = require('expo-av').Audio;
+      Notifications = require('expo-notifications');
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+        } as any),
+      });
+    }
   } catch {}
 }
 
@@ -32,7 +39,7 @@ export default function Admin() {
   const [selectedInquiries, setSelectedInquiries] = useState<any[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   const [media, setMedia] = useState<any[]>([]);
-  const [quote, setQuote] = useState({ labour: "", materials: "", materialsList: "", fee: "200", notes: "" });
+  const [quote, setQuote] = useState({ labour: "", materials: "", materialsList: "", fee: "4", notes: "" });
   const [adminReply, setAdminReply] = useState("");
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<'dashboard'|'jobs'|'plumbers'|'customers'>('dashboard');
@@ -43,7 +50,7 @@ export default function Admin() {
   const [editPlumberModal, setEditPlumberModal] = useState<any>(null); const [editCustomerModal, setEditCustomerModal] = useState<any>(null);
   const [search, setSearch] = useState(""); const [pError, setPError] = useState(""); const [pSuccess, setPSuccess] = useState(""); const [isLive, setIsLive] = useState(false); const [lastUpdate, setLastUpdate] = useState<string>(""); const [newJobAlert, setNewJobAlert] = useState<any>(null);
   const [inquiries, setInquiries] = useState<any[]>([]);
-  const soundRef = useRef<Audio.Sound | null>(null);
+  const soundRef = useRef<any>(null);
 
   const getStatusColor = (status: string) => {
     switch(status){
@@ -82,25 +89,30 @@ export default function Admin() {
   };
 
   const setupSound = async () => {
+    if (!Audio) return;
     try {
       await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
       const { sound } = await Audio.Sound.createAsync({ uri: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" }, { shouldPlay: false });
       soundRef.current = sound;
     } catch(e){}
   };
-  const playSound = async () => { try { await soundRef.current?.replayAsync(); } catch(e){} };
+  const playSound = async () => { if (!Audio) return; try { await soundRef.current?.replayAsync(); } catch(e){} };
 
   useEffect(()=>{ 
     fetchJobs(true); setupSound();
-    if(Platform.OS !== 'web') Notifications?.requestPermissionsAsync();
+    if(Platform.OS !== 'web' && Notifications) {
+      try { Notifications.requestPermissionsAsync(); } catch {}
+    }
     const channel = supabase.channel('admin-realtime-all-v4')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'jobs' }, async (payload) => {
         const nj = payload.new;
         setJobs(prev => [nj, ...prev]); setNewJobAlert({ ...nj, isNewJob: true });
-        Vibration.vibrate([0, 400, 100, 400]);
+        if(Platform.OS !== 'web') Vibration.vibrate([0, 400, 100, 400]);
         try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch{}
         playSound();
-        if(Notifications) await Notifications.scheduleNotificationAsync({ content: { title: `🚨 NEW JOB ${nj.job_number}`, body: `${nj.category} - ${nj.building_name}, ${nj.estate}`, sound: true }, trigger: null });
+        if(Notifications) {
+          try { await Notifications.scheduleNotificationAsync({ content: { title: `🚨 NEW JOB ${nj.job_number}`, body: `${nj.category} - ${nj.building_name}, ${nj.estate}`, sound: true }, trigger: null }); } catch {}
+        }
         setTimeout(()=> setNewJobAlert(null), 7000);
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'jobs' }, () => fetchJobs())
@@ -111,15 +123,17 @@ export default function Admin() {
         const { data: job } = await supabase.from('jobs').select('job_number, building_name, estate').eq('id', inquiry.job_id).single();
         setNewJobAlert({ job_number: job?.job_number || 'JOB', category: "CUSTOMER QUESTION", building_name: inquiry.message.substring(0, 80), estate: job?.building_name || job?.estate, isInquiry: true, inquiry: inquiry, job_id: inquiry.job_id });
         fetchJobs();
-        Vibration.vibrate([0, 500, 200, 500]);
+        if(Platform.OS !== 'web') Vibration.vibrate([0, 500, 200, 500]);
         try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } catch{}
         playSound();
-        if(Notifications) await Notifications.scheduleNotificationAsync({ content: { title: `💬 Question - ${job?.job_number}`, body: inquiry.message.substring(0, 120), sound: true }, trigger: null });
+        if(Notifications) {
+          try { await Notifications.scheduleNotificationAsync({ content: { title: `💬 Question - ${job?.job_number}`, body: inquiry.message.substring(0, 120), sound: true }, trigger: null }); } catch {}
+        }
         setTimeout(()=> setNewJobAlert(null), 12000);
       })
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, () => fetchJobs())
       .subscribe((status) => { if(status === 'SUBSCRIBED') setIsLive(true); });
-    return () => { supabase.removeChannel(channel); soundRef.current?.unloadAsync(); setIsLive(false); }
+    return () => { supabase.removeChannel(channel); try { soundRef.current?.unloadAsync(); } catch {} setIsLive(false); }
   }, []);
 
   const formatPhoneForWhatsApp = (phone: string) => {
@@ -275,10 +289,10 @@ export default function Admin() {
     try{
       const total = (parseFloat(quote.labour)||0)+(parseFloat(quote.materials)||0)+(parseFloat(quote.fee)||0);
       const qNum = `RFQ-${selected.job_number.split('-').pop()}`;
-      const { error: jobError } = await supabase.from('jobs').update({ status: 'QUOTATION_PREPARED', labour_cost: parseFloat(quote.labour), materials_cost: parseFloat(quote.materials), materials_list: quote.materialsList, total_amount: total, quotation_details: `Labour KES ${quote.labour} | Materials: ${quote.materialsList} = KES ${quote.materials}` }).eq('id', selected.id);
+      const { error: jobError } = await supabase.from('jobs').update({ status: 'QUOTATION_PREPARED', labour_cost: parseFloat(quote.labour), materials_cost: parseFloat(quote.materials), materials_list: quote.materialsList, total_amount: total, service_fee: parseFloat(quote.fee)||4, quotation_details: `Labour KES ${quote.labour} | Materials: ${quote.materialsList} = KES ${quote.materials} | Fee ${quote.fee}` }).eq('id', selected.id);
       if(jobError) throw new Error(jobError.message);
       try {
-        await supabase.from('quotations').insert({ job_id: selected.id, quotation_number: qNum, labour: parseFloat(quote.labour)||0, materials: parseFloat(quote.materials)||0, materials_list: quote.materialsList, service_fee: parseFloat(quote.fee)||0, total, notes: quote.notes || adminReply, status: 'PENDING' });
+        await supabase.from('quotations').insert({ job_id: selected.id, quotation_number: qNum, labour: parseFloat(quote.labour)||0, materials: parseFloat(quote.materials)||0, materials_list: quote.materialsList, service_fee: parseFloat(quote.fee)||4, total, notes: quote.notes || adminReply, status: 'PENDING' });
       } catch(qErr){ console.log("Quotation insert warning:", qErr); }
       
       if(selected.customer_id){
@@ -287,11 +301,11 @@ export default function Admin() {
           await notifyCustomer(selected.customer_id, `💰 Updated Quotation - ${selected.job_number} - KES ${total.toLocaleString()}`, `${replyMsg} - New total KES ${total.toLocaleString()}: ${quote.materialsList}`, "QUOTATION_READY", selected.id);
           await supabase.from('job_inquiries').update({ status: 'RESOLVED', admin_reply: replyMsg, resolved_at: new Date().toISOString() }).eq('job_id', selected.id).eq('status','PENDING');
         } else {
-          await notifyCustomer(selected.customer_id, `💰 Quotation Ready`, `${selected.job_number} - KES ${total.toLocaleString()}: Labour ${quote.labour} + Materials ${quote.materials}`, "QUOTATION_READY", selected.id);
+          await notifyCustomer(selected.customer_id, `💰 Quotation Ready`, `${selected.job_number} - KES ${total.toLocaleString()}: Labour ${quote.labour} + Materials ${quote.materials} + Fee ${quote.fee}`, "QUOTATION_READY", selected.id);
         }
       }
       Alert.alert("Sent & Notified ✅", `KES ${total.toLocaleString()} sent to customer. ${selectedInquiries.length>0 ? "Customer question answered." : ""}`);
-      setSelected(null); setSelectedInquiries([]); setQuote({ labour: "", materials: "", materialsList: "", fee: "200", notes: "" }); setAdminReply(""); fetchJobs(true);
+      setSelected(null); setSelectedInquiries([]); setQuote({ labour: "", materials: "", materialsList: "", fee: "4", notes: "" }); setAdminReply(""); fetchJobs(true);
     }catch(e:any){ Alert.alert("Failed: " + e.message); } finally { setLoading(false); }
   };
 
@@ -322,7 +336,15 @@ export default function Admin() {
 
   if(selected){
     const c = getStatusColor(selected.status);
-    const sameRegionPlumbers = plumbers.filter(p=>p.active && (p.estate === selected.building_name || p.location === selected.building_name || p.estate === selected.street || p.location?.toLowerCase() === selected.building_name?.toLowerCase()));
+    // FIXED: exact same region logic as initially - case-insensitive match on building_name, estate, street
+    const sameRegionPlumbers = plumbers.filter(p=>p.active && (
+      p.estate?.toLowerCase() === selected.building_name?.toLowerCase() || 
+      p.location?.toLowerCase() === selected.building_name?.toLowerCase() ||
+      p.estate?.toLowerCase() === selected.estate?.toLowerCase() ||
+      p.location?.toLowerCase() === selected.estate?.toLowerCase() ||
+      p.estate?.toLowerCase() === selected.street?.toLowerCase() ||
+      p.coverage_area?.some((a:string)=> a?.toLowerCase() === selected.building_name?.toLowerCase())
+    ));
     const otherPlumbers = plumbers.filter(p=>p.active && !sameRegionPlumbers.find(s=>s.id===p.id));
     const customerPhone = selectedCustomer?.phone || "";
     const waNumber = customerPhone ? formatPhoneForWhatsApp(customerPhone) : "";
@@ -330,7 +352,7 @@ export default function Admin() {
       <ScrollView style={{ flex:1, backgroundColor:"white" }} contentContainerStyle={{ padding:20, paddingTop:50 }}>
         <TouchableOpacity onPress={()=>setSelected(null)}><Text style={{ color:"#0ABAB5", fontWeight:"800" }}>← Back to Dashboard</Text></TouchableOpacity>
         <View style={{ flexDirection:"row", justifyContent:"space-between", marginTop:16 }}><Text style={{ fontSize:22, fontWeight:"900" }}>{selected.job_number}</Text><Text style={{ fontSize:11, fontWeight:"800", backgroundColor: c.bg, paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}>{c.label}</Text></View>
-        <View style={{ backgroundColor:"#f8fafc", padding:16, borderRadius:16, marginTop:16 }}><Text style={{ fontWeight:"800" }}>{selected.category}</Text><Text style={{ marginTop:6 }}>{selected.description}</Text><Text style={{ marginTop:8, fontWeight:"600" }}>📍 {selected.building_name}, {selected.street}</Text><Text style={{ marginTop:4, fontSize:12, color:"#0ABAB5", fontWeight:"700" }}>Region: {selected.building_name}</Text></View>
+        <View style={{ backgroundColor:"#f8fafc", padding:16, borderRadius:16, marginTop:16 }}><Text style={{ fontWeight:"800" }}>{selected.category}</Text><Text style={{ marginTop:6 }}>{selected.description}</Text><Text style={{ fontWeight:"600", marginTop:8 }}>📍 {selected.building_name}, {selected.street}</Text><Text style={{ marginTop:4, fontSize:12, color:"#0ABAB5", fontWeight:"700" }}>Region: {selected.building_name}</Text></View>
         {selected.plumbers && (<View style={{ backgroundColor:"#f0fdfa", borderWidth:1, borderColor:"#0ABAB5", padding:14, borderRadius:14, marginTop:12, flexDirection:"row", alignItems:"center", gap:12 }}><View style={{ width:44, height:44, borderRadius:22, backgroundColor:"#0A1931", justifyContent:"center", alignItems:"center" }}><Text style={{ color:"white", fontWeight:"900" }}>{selected.plumbers.name?.[0]}</Text></View><View style={{ flex:1 }}><Text style={{ fontSize:11, fontWeight:"800", color:"#0ABAB5" }}>ASSIGNED PLUMBER</Text><Text style={{ fontWeight:"900" }}>{selected.plumbers.name} • {selected.plumbers.plumber_number}</Text><Text style={{ fontSize:13 }}>📞 {selected.plumbers.phone}</Text></View></View>)}
         <View style={{ flexDirection:"row", flexWrap:"wrap", gap:8, marginTop:16 }}>{media.map((m,i)=>(<Image key={i} source={{uri: m.url}} style={{ width:100, height:100, borderRadius:12 }} />))}</View>
         
@@ -339,7 +361,6 @@ export default function Admin() {
             <View style={{ flexDirection:"row", alignItems:"center", gap:8 }}>
               <View style={{ backgroundColor:"#f59e0b", width:28, height:28, borderRadius:14, justifyContent:"center", alignItems:"center" }}><Ionicons name="chatbubble-ellipses" size={14} color="white" /></View>
               <Text style={{ fontWeight:"900", fontSize:14, color:"#92400e" }}>Customer Question ({selectedInquiries.length})</Text>
-              <View style={{ backgroundColor:"#fef3c7", paddingHorizontal:8, paddingVertical:2, borderRadius:10, marginLeft:8 }}><Text style={{ fontSize:9, fontWeight:"800", color:"#b45309" }}>NEEDS REPLY</Text></View>
             </View>
             {selectedInquiries.map((inq:any)=>(
               <View key={inq.id} style={{ backgroundColor:"white", borderRadius:12, padding:14, marginTop:12, borderWidth:1, borderColor:"#fef3c7" }}>
@@ -347,87 +368,89 @@ export default function Admin() {
                 <Text style={{ fontSize:14, color:"#0A1931", marginTop:6, fontWeight:"600", lineHeight:20 }}>“{inq.message}”</Text>
               </View>
             ))}
-            <Text style={{ fontSize:11, fontWeight:"800", marginTop:16, color:"#0A1931" }}>Your Reply to Customer (will notify them)</Text>
-            <TextInput value={adminReply} onChangeText={setAdminReply} placeholder="e.g. The materials cost includes 2 PVC pipes @400 each, P-Trap 650, transport 500..." multiline style={{ backgroundColor:"white", borderWidth:1, borderColor:"#fde68a", borderRadius:12, padding:12, marginTop:8, minHeight:80, textAlignVertical:"top", fontSize:13 }} />
-            <View style={{ flexDirection:"row", gap:8, marginTop:12 }}>
-              <TouchableOpacity onPress={()=>{ if(waNumber) Linking.openURL(`https://wa.me/${waNumber}?text=${encodeURIComponent(`Hi, regarding ${selected.job_number} - you asked: "${selectedInquiries[0]?.message}"\n\nMy reply: ${adminReply || "We have updated your quotation"}`)}`); }} style={{ flex:1, backgroundColor:"#22c55e", padding:12, borderRadius:10, flexDirection:"row", justifyContent:"center", gap:6 }}>
-                <Ionicons name="logo-whatsapp" size={14} color="white" /><Text style={{ color:"white", fontWeight:"800", fontSize:12 }}>WhatsApp</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={()=>{ if(customerPhone) Linking.openURL(`tel:${customerPhone}`); }} style={{ backgroundColor:"#f1f5f9", padding:12, borderRadius:10 }}>
-                <Ionicons name="call" size={14} color="#0A1931" />
-              </TouchableOpacity>
-            </View>
-            <View style={{ flexDirection:"row", gap:8, marginTop:12 }}>
-              <TouchableOpacity onPress={()=>resolveInquiry(selectedInquiries[0])} disabled={loading} style={{ flex:1, backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:14, borderRadius:12, flexDirection:"row", justifyContent:"center", gap:6 }}>
-                {loading ? <ActivityIndicator color="white" /> : <><Ionicons name="checkmark-done" size={14} color="white" /><Text style={{ color:"white", fontWeight:"800", fontSize:12 }}>Reply & Resolve</Text></>}
-              </TouchableOpacity>
-              <TouchableOpacity onPress={()=>quickResolveWithoutReply(selectedInquiries[0])} style={{ backgroundColor:"#fef3c7", padding:14, borderRadius:12, borderWidth:1, borderColor:"#fde68a" }}>
-                <Text style={{ fontSize:11, fontWeight:"700", color:"#92400e" }}>Skip Reply</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={{ fontSize:10, color:"#b45309", marginTop:8, textAlign:"center" }}>Customer gets instant notification + question disappears from dashboard</Text>
+            <Text style={{ fontSize:11, fontWeight:"800", marginTop:16, color:"#0A1931" }}>Your Reply</Text>
+            <TextInput value={adminReply} onChangeText={setAdminReply} placeholder="Reply..." multiline style={{ backgroundColor:"white", borderWidth:1, borderColor:"#fde68a", borderRadius:12, padding:12, marginTop:8, minHeight:80, textAlignVertical:"top" }} />
+            <TouchableOpacity onPress={()=>resolveInquiry(selectedInquiries[0])} disabled={loading} style={{ backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:14, borderRadius:12, marginTop:12 }}>
+              {loading ? <ActivityIndicator color="white" /> : <Text style={{ color:"white", textAlign:"center", fontWeight:"800" }}>Reply & Resolve</Text>}
+            </TouchableOpacity>
           </View>
         )}
 
         {selected.status === 'UNDER_REVIEW' || (selected.status === 'QUOTATION_PREPARED' && selectedInquiries.length > 0) ? (
           <View style={{ backgroundColor:"#ffffff", borderRadius:20, marginTop:20, borderWidth:1, borderColor:"#e5e7eb", overflow:"hidden" }}>
             <View style={{ padding:20, borderBottomWidth:1, borderBottomColor:"#f1f5f9" }}>
-              <View style={{ flexDirection:"row", justifyContent:"space-between" }}>
-                <Text style={{ fontWeight:"900", fontSize:15, color:"#0A1931" }}>{selectedInquiries.length > 0 ? "Update Quotation (Answers Question)" : "Create Quotation"}</Text>
-                <View style={{ backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", paddingHorizontal:10, paddingVertical:4, borderRadius:20 }}>
-                  <Text style={{ fontSize:10, fontWeight:"800", color:"#64748b" }}>{selected.job_number}</Text>
-                </View>
-              </View>
-              <Text style={{ fontSize:11, color: selectedInquiries.length>0 ? "#b45309" : "#94a3b8", marginTop:4, fontWeight: selectedInquiries.length>0 ? "700" : "400" }}>{selectedInquiries.length > 0 ? "⚠️ Customer waiting - update price & reply above" : "Customer will see full breakdown"}</Text>
+              <Text style={{ fontWeight:"900", fontSize:15, color:"#0A1931" }}>{selectedInquiries.length > 0 ? "Update Quotation" : "Create Quotation"}</Text>
+              <Text style={{ fontSize:11, color:"#94a3b8", marginTop:4 }}>Service Fee is now KES 4</Text>
             </View>
             <View style={{ padding:20, gap:16 }}>
               <View>
-                <Text style={{ fontSize:10, fontWeight:"800", color:"#475569", letterSpacing:0.8, marginBottom:8 }}>LABOUR CHARGE</Text>
+                <Text style={{ fontSize:10, fontWeight:"800", color:"#475569", marginBottom:8 }}>LABOUR CHARGE</Text>
                 <View style={{ flexDirection:"row", alignItems:"center", backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, paddingHorizontal:14 }}>
                   <Text style={{ fontWeight:"800", color:"#64748b", fontSize:12 }}>KES</Text>
-                  <TextInput placeholder="2000" keyboardType="numeric" value={quote.labour} onChangeText={t=>setQuote({...quote, labour:t})} style={{ flex:1, paddingVertical:14, paddingHorizontal:10, fontSize:14, fontWeight:"600" }} />
+                  <TextInput placeholder="2000" keyboardType="numeric" value={quote.labour} onChangeText={t=>setQuote({...quote, labour:t})} style={{ flex:1, paddingVertical:14, paddingHorizontal:10 }} />
                 </View>
-                <Text style={{ fontSize:10, color:"#94a3b8", marginTop:6 }}>Service + transport + expertise</Text>
               </View>
               <View>
-                <Text style={{ fontSize:10, fontWeight:"800", color:"#475569", letterSpacing:0.8, marginBottom:8 }}>MATERIALS LIST</Text>
-                <TextInput placeholder="e.g. 2x PVC Pipe @400, 1x P-Trap @650, 1x Sealant @350" placeholderTextColor="#94a3b8" value={quote.materialsList} onChangeText={t=>setQuote({...quote, materialsList:t})} multiline style={{ backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, fontSize:13, height:90, textAlignVertical:"top" }} />
+                <Text style={{ fontSize:10, fontWeight:"800", color:"#475569", marginBottom:8 }}>MATERIALS LIST</Text>
+                <TextInput placeholder="e.g. 2x PVC Pipe @400" value={quote.materialsList} onChangeText={t=>setQuote({...quote, materialsList:t})} multiline style={{ backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, height:90, textAlignVertical:"top" }} />
               </View>
               <View>
-                <Text style={{ fontSize:10, fontWeight:"800", color:"#475569", letterSpacing:0.8, marginBottom:8 }}>MATERIALS COST</Text>
+                <Text style={{ fontSize:10, fontWeight:"800", color:"#475569", marginBottom:8 }}>MATERIALS COST</Text>
                 <View style={{ flexDirection:"row", alignItems:"center", backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, paddingHorizontal:14 }}>
                   <Text style={{ fontWeight:"800", color:"#64748b", fontSize:12 }}>KES</Text>
-                  <TextInput placeholder="3000" keyboardType="numeric" value={quote.materials} onChangeText={t=>setQuote({...quote, materials:t})} style={{ flex:1, paddingVertical:14, paddingHorizontal:10, fontSize:14, fontWeight:"600" }} />
+                  <TextInput placeholder="3000" keyboardType="numeric" value={quote.materials} onChangeText={t=>setQuote({...quote, materials:t})} style={{ flex:1, paddingVertical:14, paddingHorizontal:10 }} />
                 </View>
+              </View>
+              <View style={{ flexDirection:"row", alignItems:"center", backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, paddingHorizontal:14 }}>
+                <Text style={{ fontWeight:"800", color:"#64748b", fontSize:12 }}>FEE KES</Text>
+                <TextInput value={quote.fee} onChangeText={t=>setQuote({...quote, fee:t})} keyboardType="numeric" style={{ flex:1, paddingVertical:14, paddingHorizontal:10, fontWeight:"700" }} />
+                <Text style={{ fontSize:10, color:"#0ABAB5", fontWeight:"800" }}>4 BOB</Text>
               </View>
               <View style={{ backgroundColor:"#0A1931", borderRadius:14, padding:16, flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
-                <View><Text style={{ color:"#94a3b8", fontSize:10, fontWeight:"700" }}>TOTAL</Text><Text style={{ color:"#fff", fontSize:11, opacity:0.6, marginTop:2 }}>Labour + Materials + Fee</Text></View>
+                <Text style={{ color:"#94a3b8", fontSize:10, fontWeight:"700" }}>TOTAL = Labour + Materials + Fee</Text>
                 <Text style={{ color:"white", fontWeight:"900", fontSize:18 }}>KES {((parseFloat(quote.labour)||0)+(parseFloat(quote.materials)||0)+(parseFloat(quote.fee)||0)).toLocaleString()}</Text>
               </View>
               <TouchableOpacity onPress={createQuotation} disabled={loading} style={{ backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:16, borderRadius:12 }}>
-                {loading ? <ActivityIndicator color="white" /> : <Text style={{ color:"white", textAlign:"center", fontWeight:"800", fontSize:13 }}>{selectedInquiries.length > 0 ? "Update, Reply & Notify Customer" : "Send Quotation to Customer"}</Text>}
+                {loading ? <ActivityIndicator color="white" /> : <Text style={{ color:"white", textAlign:"center", fontWeight:"800" }}>{selectedInquiries.length > 0 ? "Update & Notify" : "Send Quotation (KES 4 fee)"}</Text>}
               </TouchableOpacity>
             </View>
           </View>
         ) : null}
 
+        {/* === RESTORED ASSIGN PLUMBER AS IT WAS INITIALLY === */}
         {selected.status === 'QUOTATION_APPROVED' && (
-          <View style={{ backgroundColor:"#f0fdfa", padding:16, borderRadius:16, marginTop:20 }}>
-            <Text style={{ fontWeight:"900", fontSize:16 }}>Smart Assign - Same Region</Text>
-            <Text style={{ fontSize:12, color:"#64748b", marginTop:4 }}>Customer in {selected.building_name} • {sameRegionPlumbers.length} plumbers nearby</Text>
-            {sameRegionPlumbers.length > 0 && <Text style={{ fontWeight:"800", marginTop:16, fontSize:12, color:"#16a34a" }}>✅ IN SAME ESTATE - RECOMMENDED</Text>}
-            {sameRegionPlumbers.map(p=>(
-              <TouchableOpacity key={p.id} onPress={()=>assignPlumber(p)} style={{ backgroundColor:"#dcfce7", padding:14, borderRadius:12, marginTop:8, borderWidth:2, borderColor:"#22c55e" }}>
-                <Text style={{ fontWeight:"900" }}>✅ {p.plumber_number} - {p.name} • {p.estate || p.location}</Text>
-                <Text style={{ fontSize:11 }}>📞 {p.phone} • Auto-match {p.estate}</Text>
-              </TouchableOpacity>
-            ))}
-            <Text style={{ fontWeight:"800", marginTop:16, fontSize:12, color:"#64748b" }}>Other Available Plumbers ({otherPlumbers.length})</Text>
-            {otherPlumbers.map(p=>(
-              <TouchableOpacity key={p.id} onPress={()=>assignPlumber(p)} style={{ backgroundColor:"white", padding:14, borderRadius:12, marginTop:8, borderWidth:1, borderColor:"#e2e8f0" }}>
-                <Text style={{ fontWeight:"700" }}>{p.plumber_number} - {p.name} • {p.estate || p.location || "Nairobi"}</Text>
-              </TouchableOpacity>
-            ))}
+          <View style={{ backgroundColor:"#f0fdfa", padding:16, borderRadius:16, marginTop:20, borderWidth:1, borderColor:"#0ABAB5" }}>
+            <Text style={{ fontWeight:"900", fontSize:16 }}>Admin Assign Plumber - Manual</Text>
+            <Text style={{ fontSize:12, color:"#64748b", marginTop:4 }}>Customer in {selected.building_name} • {sameRegionPlumbers.length} plumbers in area • {otherPlumbers.length} others</Text>
+            
+            {sameRegionPlumbers.length > 0 && (
+              <View style={{ marginTop:12 }}>
+                <Text style={{ fontSize:11, fontWeight:"900", color:"#0ABAB5" }}>📍 IN {selected.building_name?.toUpperCase()} ({sameRegionPlumbers.length})</Text>
+                {sameRegionPlumbers.map(p=>(
+                  <TouchableOpacity key={p.id} onPress={()=>assignPlumber(p)} style={{ backgroundColor:"white", padding:14, borderRadius:12, marginTop:8, borderWidth:2, borderColor:"#0ABAB5", flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
+                    <View style={{ flex:1 }}>
+                      <Text style={{ fontWeight:"800" }}>{p.plumber_number} - {p.name}</Text>
+                      <Text style={{ fontSize:11, color:"#475569" }}>📍 {p.estate || p.location} • ⭐ {p.rating}</Text>
+                      <Text style={{ fontSize:11 }}>📞 {p.phone}</Text>
+                    </View>
+                    <View style={{ backgroundColor:"#0A1931", paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}><Text style={{ color:"white", fontSize:11, fontWeight:"800" }}>ASSIGN</Text></View>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+
+            <View style={{ marginTop:16 }}>
+              <Text style={{ fontSize:11, fontWeight:"800", color: sameRegionPlumbers.length>0 ? "#94a3b8" : "#0A1931" }}>{sameRegionPlumbers.length>0 ? `OTHER ESTATES (${otherPlumbers.length})` : `AVAILABLE PLUMBERS (${otherPlumbers.length})`}</Text>
+              {otherPlumbers.map(p=>(
+                <TouchableOpacity key={p.id} onPress={()=>assignPlumber(p)} style={{ backgroundColor:"white", padding:14, borderRadius:12, marginTop:8, borderWidth:1, borderColor:"#e2e8f0" }}>
+                  <Text style={{ fontWeight:"700" }}>{p.plumber_number} - {p.name} • {p.estate || p.location}</Text>
+                  <Text style={{ fontSize:11 }}>📞 {p.phone}</Text>
+                </TouchableOpacity>
+              ))}
+              {otherPlumbers.length===0 && sameRegionPlumbers.length===0 && (
+                <Text style={{ marginTop:8, fontSize:12, color:"#94a3b8" }}>No active plumbers. Add one in {selected.building_name}</Text>
+              )}
+            </View>
           </View>
         )}
       </ScrollView>
@@ -449,14 +472,10 @@ export default function Admin() {
         <View style={{ position:"absolute", top: Platform.OS==='web'? 20:60, left: IS_WEB? 280:16, right:16, zIndex:9999, backgroundColor: newJobAlert.isInquiry ? "#FEF3C7" : "#0A1931", borderRadius:16, padding:16, flexDirection:"row", alignItems:"center", elevation:10, borderWidth:2, borderColor: newJobAlert.isInquiry ? "#f59e0b" : "#FACC15" }}>
           <View style={{ backgroundColor: newJobAlert.isInquiry ? "#f59e0b" : "#FACC15", width:44, height:44, borderRadius:22, justifyContent:"center", alignItems:"center" }}><Text style={{ fontSize:22 }}>{newJobAlert.isInquiry ? "💬" : "🚨"}</Text></View>
           <View style={{ marginLeft:12, flex:1 }}>
-            <Text style={{ color: newJobAlert.isInquiry ? "#92400e" : "#FACC15", fontWeight:"900", fontSize:12 }}>{newJobAlert.isInquiry ? `QUESTION - ${newJobAlert.job_number}` : `NEW JOB - ${newJobAlert.estate || newJobAlert.building_name}`}</Text>
-            <Text style={{ color: newJobAlert.isInquiry ? "#0A1931" : "white", fontWeight:"800", marginTop:2 }} numberOfLines={1}>{newJobAlert.isInquiry ? newJobAlert.building_name : `${newJobAlert.job_number} - ${newJobAlert.category}`}</Text>
-            <Text style={{ color: newJobAlert.isInquiry ? "#b45309" : "#94a3b8", fontSize:11, marginTop:2 }} numberOfLines={1}>{newJobAlert.isInquiry ? `Tap to view job` : `${newJobAlert.building_name}, ${newJobAlert.street}`}</Text>
+            <Text style={{ color: newJobAlert.isInquiry ? "#92400e" : "#FACC15", fontWeight:"900", fontSize:12 }}>{newJobAlert.isInquiry ? `QUESTION - ${newJobAlert.job_number}` : `NEW JOB`}</Text>
+            <Text style={{ color: newJobAlert.isInquiry ? "#0A1931" : "white", fontWeight:"800", marginTop:2 }} numberOfLines={1}>{newJobAlert.job_number}</Text>
           </View>
-          <View style={{ gap:8 }}>
-            <TouchableOpacity onPress={()=>{ if(newJobAlert.isInquiry && newJobAlert.job_id){ openJobById(newJobAlert.job_id); } else { const j=newJobAlert; openJob(j); } setNewJobAlert(null); }} style={{ backgroundColor: newJobAlert.isInquiry ? "#f59e0b" : "#FACC15", paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}><Text style={{ fontWeight:"900", fontSize:11, color: newJobAlert.isInquiry ? "white" : "#0A1931" }}>VIEW</Text></TouchableOpacity>
-            <TouchableOpacity onPress={()=>setNewJobAlert(null)} style={{ alignItems:"center", marginTop:6 }}><Ionicons name="close" size={18} color={newJobAlert.isInquiry ? "#92400e" : "white"}/></TouchableOpacity>
-          </View>
+          <TouchableOpacity onPress={()=>{ if(newJobAlert.job_id){ openJobById(newJobAlert.job_id); } else { openJob(newJobAlert); } setNewJobAlert(null); }} style={{ backgroundColor: newJobAlert.isInquiry ? "#f59e0b" : "#FACC15", paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}><Text style={{ fontWeight:"900", fontSize:11 }}>VIEW</Text></TouchableOpacity>
         </View>
       )}
       {IS_WEB && (
@@ -469,68 +488,29 @@ export default function Admin() {
               <TouchableOpacity onPress={()=>setTab('jobs')} style={{ backgroundColor: tab==='jobs' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='jobs' ? "#0A1931" : "#94a3b8", fontWeight:"600" }}>📋 Jobs</Text></TouchableOpacity>
               <TouchableOpacity onPress={()=>setTab('customers')} style={{ backgroundColor: tab==='customers' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='customers' ? "#0A1931" : "#94a3b8", fontWeight:"600" }}>👤 Customers</Text></TouchableOpacity>
             </View>
-            {inquiries.length > 0 && (
-              <View style={{ marginTop:20, backgroundColor:"#fef3c7", borderRadius:12, padding:12, borderWidth:1, borderColor:"#f59e0b" }}>
-                <Text style={{ fontWeight:"900", fontSize:11, color:"#92400e" }}>💬 {inquiries.length} Questions</Text>
-                <Text style={{ fontSize:10, color:"#b45309", marginTop:2 }}>Customers need clarification</Text>
-              </View>
-            )}
           </View>
-          <View style={{ backgroundColor:"#1e293b", padding:14, borderRadius:14, flexDirection:"row", alignItems:"center", gap:10 }}><View style={{ width:36, height:36, borderRadius:18, backgroundColor:"#FACC15", justifyContent:"center", alignItems:"center" }}><Text style={{fontWeight:"900"}}>MW</Text></View><View><Text style={{color:"white", fontWeight:"800", fontSize:13}}>Mary Wanjiku</Text><Text style={{color:"#94a3b8", fontSize:11}}>Admin</Text></View></View>
         </View>
       )}
       <ScrollView style={{ flex:1 }} contentContainerStyle={{ padding: IS_WEB ? 28 : 20, paddingTop: IS_WEB ? 28 : 50 }}>
-        <View style={{ flexDirection:"row", justifyContent:"space-between", alignItems:"flex-start" }}>
+        <View style={{ flexDirection:"row", justifyContent:"space-between" }}>
           <View style={{ flex:1 }}>
             <View style={{flexDirection:"row", alignItems:"center", gap:8}}><Text style={{ fontSize: IS_WEB ? 36 : 26, fontWeight:"900", color:"#0A1931" }}>Dashboard</Text>{isLive && <View style={{flexDirection:"row", alignItems:"center", backgroundColor:"#dcfce7", paddingHorizontal:8, paddingVertical:3, borderRadius:12, gap:4}}><View style={{width:6, height:6, borderRadius:3, backgroundColor:"#22c55e"}}/><Text style={{fontSize:10, fontWeight:"900", color:"#16a34a"}}>LIVE</Text></View>}</View>
-            <Text style={{ color:"#64748b", marginTop:4 }}>{jobs.length} jobs • {plumbers.length} plumbers • {customers.length} customers • {inquiries.length} inquiries {lastUpdate ? `• ${lastUpdate}` : ""}</Text>
+            <Text style={{ color:"#64748b", marginTop:4 }}>{jobs.length} jobs • {plumbers.length} plumbers • {customers.length} customers</Text>
           </View>
           <TouchableOpacity onPress={()=>fetchJobs(true)} style={{ backgroundColor:"white", padding:12, borderRadius:12, borderWidth:1, borderColor:"#e2e8f0" }}><Text>↻</Text></TouchableOpacity>
         </View>
         <View style={{ flexDirection:"row", gap:10, marginTop:16, backgroundColor:"white", borderRadius:14, padding:14, borderWidth:1, borderColor:"#e2e8f0", alignItems:"center" }}><Text>🔍</Text><TextInput placeholder="Search jobs, plumbers, estates..." value={search} onChangeText={setSearch} style={{ flex:1 }} /></View>
-
-        {inquiries.length > 0 && (
-          <View style={{ backgroundColor:"white", borderRadius:20, padding:20, marginTop:16, borderWidth:1, borderColor:"#fde68a" }}>
-            <View style={{ flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
-              <Text style={{ fontWeight:"900", fontSize:16, color:"#0A1931" }}>💬 Customer Questions</Text>
-              <View style={{ backgroundColor:"#fef3c7", paddingHorizontal:10, paddingVertical:4, borderRadius:20 }}><Text style={{ fontSize:11, fontWeight:"800", color:"#92400e" }}>{inquiries.length} pending</Text></View>
-            </View>
-            <Text style={{ fontSize:11, color:"#94a3b8", marginTop:4 }}>Customers need clarification before approving — tap to reply</Text>
-            <View style={{ marginTop:12, gap:10 }}>
-              {inquiries.slice(0,5).map((inq:any)=>(
-                <TouchableOpacity key={inq.id} onPress={()=> openJobById(inq.job_id)} style={{ backgroundColor:"#fffbeb", borderWidth:1, borderColor:"#fde68a", borderRadius:12, padding:12, flexDirection:"row", justifyContent:"space-between" }}>
-                  <View style={{ flex:1 }}>
-                    <Text style={{ fontWeight:"800", fontSize:12, color:"#0A1931" }}>{inq.jobs?.job_number} • {inq.jobs?.building_name}</Text>
-                    <Text style={{ fontSize:12, color:"#334155", marginTop:4 }} numberOfLines={2}>❝ {inq.message} ❞</Text>
-                    <Text style={{ fontSize:10, color:"#94a3b8", marginTop:4 }}>{new Date(inq.created_at).toLocaleString()}</Text>
-                  </View>
-                  <View style={{ backgroundColor:"#f59e0b", paddingHorizontal:10, paddingVertical:6, borderRadius:20, alignSelf:"flex-start", marginLeft:8 }}>
-                    <Text style={{ fontSize:10, fontWeight:"800", color:"white" }}>VIEW</Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-        )}
-
         <View style={{ flexDirection:"row", gap:16, marginTop:20, flexWrap:"wrap" }}>
           <StatCard icon="👥" label="Active Plumbers" value={activePlumbers || plumbers.length} sub={`↑ +${activePlumbers} this week`} subColor="#16a34a" />
-          <StatCard icon="📋" label="Pending Jobs" value={pendingJobs} sub={`↓ -${pendingJobs>2?2:pendingJobs} from yesterday`} subColor="#d97706" />
-          <StatCard icon="✅" label="Completed Today" value={completedToday} sub={`↑ +${completedToday} vs yesterday`} subColor="#16a34a" />
-          <StatCard icon="💰" label="Revenue" value={`Ksh ${revenue.toLocaleString()}`} sub="↑ +12% vs last week" subColor="#16a34a" />
+          <StatCard icon="📋" label="Pending Jobs" value={pendingJobs} sub={`↓ -${pendingJobs>2?2:pendingJobs}`} subColor="#d97706" />
+          <StatCard icon="✅" label="Completed Today" value={completedToday} sub={`↑ +${completedToday}`} subColor="#16a34a" />
+          <StatCard icon="💰" label="Revenue" value={`Ksh ${revenue.toLocaleString()}`} sub="↑ +12%" subColor="#16a34a" />
         </View>
         <View style={{ flexDirection: IS_WEB ? "row" : "column", gap:16, marginTop:24 }}>
           <View style={{ flex: IS_WEB ? 1.6 : 1, backgroundColor:"white", borderRadius:20, padding:20, borderWidth:1, borderColor:"#eef2f7" }}>
-            <View style={{ flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}><Text style={{ fontSize:20, fontWeight:"900", color:"#0A1931" }}>Recent Jobs</Text><TouchableOpacity onPress={()=>setTab('jobs')}><Text style={{ color:"#2563eb", fontWeight:"700" }}>View All →</Text></TouchableOpacity></View>
+            <View style={{ flexDirection:"row", justifyContent:"space-between" }}><Text style={{ fontSize:20, fontWeight:"900", color:"#0A1931" }}>Recent Jobs</Text><TouchableOpacity onPress={()=>setTab('jobs')}><Text style={{ color:"#2563eb", fontWeight:"700" }}>View All →</Text></TouchableOpacity></View>
             <View style={{ marginTop:16, backgroundColor:"#f8fafc", borderRadius:12, padding:12, flexDirection:"row" }}><Text style={{ flex:0.8, fontSize:11, fontWeight:"800", color:"#64748b" }}>JOB ID</Text><Text style={{ flex:1, fontSize:11, fontWeight:"800", color:"#64748b" }}>ESTATE</Text><Text style={{ flex:1.2, fontSize:11, fontWeight:"800", color:"#64748b" }}>PLUMBER</Text><Text style={{ flex:1, fontSize:11, fontWeight:"800", color:"#64748b" }}>STATUS</Text></View>
-            {filteredJobs.slice(0,5).map((job:any)=>{ const st = getStatusColor(job.status); return (<TouchableOpacity key={job.id} onPress={()=>openJob(job)} style={{ flexDirection:"row", alignItems:"center", paddingVertical:14, borderBottomWidth:1, borderBottomColor:"#f1f5f9" }}><Text style={{ flex:0.8, fontWeight:"800", fontSize:12 }}>{job.job_number}</Text><Text style={{ flex:1, fontSize:12 }}>{job.building_name?.slice(0,12)}</Text><Text style={{ flex:1.2, fontSize:12 }}>{job.plumbers?.name || "—"}</Text><View style={{ flex:1 }}><View style={{ backgroundColor:st.bg, paddingHorizontal:10, paddingVertical:4, borderRadius:12, alignSelf:"flex-start" }}><Text style={{ fontSize:10, fontWeight:"800", color:"#475569" }}>{st.label}</Text></View></View></TouchableOpacity>)})}
-          </View>
-          <View style={{ flex:1, backgroundColor:"white", borderRadius:20, padding:20, borderWidth:1, borderColor:"#eef2f7" }}>
-            <Text style={{ fontSize:18, fontWeight:"900", color:"#0A1931" }}>Nairobi – Estate Zones Map</Text><Text style={{ color:"#64748b", fontSize:12, marginTop:2 }}>Live service coverage</Text>
-            <View style={{ marginTop:16, backgroundColor:"#f0f9ff", borderRadius:16, padding:16, minHeight:260 }}>
-              <View style={{ gap:8 }}>{ESTATES.slice(0,7).map((z:any)=>(<View key={z} style={{ flexDirection:"row", alignItems:"center", gap:8 }}><View style={{ width:10, height:10, borderRadius:5, backgroundColor: plumbers.some(p=>p.estate===z || p.location===z) ? "#2563eb" : "#facc15" }} /><Text style={{ fontWeight:"600" }}>{z} {plumbers.filter(p=>p.estate===z || p.location===z).length >0 && `(${plumbers.filter(p=>p.estate===z || p.location===z).length})`}</Text></View>))}</View>
-              <Text style={{ marginTop:20, fontSize:11, color:"#64748b" }}>{plumbers.length} Active Zones • {jobs.length} Estates Covered</Text>
-            </View>
+            {filteredJobs.slice(0,5).map((job:any)=>{ const st = getStatusColor(job.status); return (<TouchableOpacity key={job.id} onPress={()=>openJob(job)} style={{ flexDirection:"row", alignItems:"center", paddingVertical:14, borderBottomWidth:1, borderBottomColor:"#f1f5f9" }}><Text style={{ flex:0.8, fontWeight:"800", fontSize:12 }}>{job.job_number}</Text><Text style={{ flex:1, fontSize:12 }}>{job.building_name?.slice(0,12)}</Text><Text style={{ flex:1.2, fontSize:12 }}>{job.plumbers?.name || "—"}</Text><View style={{ flex:1 }}><View style={{ backgroundColor:st.bg, paddingHorizontal:10, paddingVertical:4, borderRadius:12, alignSelf:"flex-start" }}><Text style={{ fontSize:10, fontWeight:"800" }}>{st.label}</Text></View></View></TouchableOpacity>)})}
           </View>
         </View>
         <View style={{ flexDirection:"row", gap:8, marginTop:28 }}>
@@ -539,34 +519,30 @@ export default function Admin() {
           <TouchableOpacity onPress={()=>setTab('plumbers')} style={{ backgroundColor: tab==='plumbers'? "#0A1931" : "white", padding:12, borderRadius:12, borderWidth:1 }}><Text style={{ textAlign:"center", fontWeight:"800", color: tab==='plumbers'? "white" : "#0A1931", fontSize:12 }}>Plumbers ({filteredPlumbers.length})</Text></TouchableOpacity>
           <TouchableOpacity onPress={()=>setTab('customers')} style={{ backgroundColor: tab==='customers'? "#0A1931" : "white", padding:12, borderRadius:12, borderWidth:1 }}><Text style={{ textAlign:"center", fontWeight:"800", color: tab==='customers'? "white" : "#0A1931", fontSize:12 }}>Customers ({filteredCustomers.length})</Text></TouchableOpacity>
         </View>
-        {tab === 'customers' && (<TouchableOpacity onPress={()=>{ setPError(""); setPSuccess(""); setShowAddCustomer(!showAddCustomer); setShowAdd(false); }} style={{ backgroundColor:"#0A1931", padding:16, borderRadius:14, marginTop:16 }}><Text style={{ color:"white", textAlign:"center", fontWeight:"900" }}>{showAddCustomer? "✕ Close" : "+ Add Customer Manually"}</Text></TouchableOpacity>)}
-        {(tab === 'dashboard' || tab === 'jobs' || tab === 'plumbers') && (<TouchableOpacity onPress={()=>{ setPError(""); setPSuccess(""); setShowAdd(!showAdd); setShowAddCustomer(false); }} style={{ backgroundColor:"#0ABAB5", padding:16, borderRadius:14, marginTop:16 }}><Text style={{ color:"white", textAlign:"center", fontWeight:"900" }}>{showAdd? "✕ Close" : "+ Add Plumber (WhatsApp)"}</Text></TouchableOpacity>)}
+        {tab === 'customers' && (<TouchableOpacity onPress={()=>{ setPError(""); setPSuccess(""); setShowAddCustomer(!showAddCustomer); }} style={{ backgroundColor:"#0A1931", padding:16, borderRadius:14, marginTop:16 }}><Text style={{ color:"white", textAlign:"center", fontWeight:"900" }}>{showAddCustomer? "✕ Close" : "+ Add Customer Manually"}</Text></TouchableOpacity>)}
+        {(tab === 'dashboard' || tab === 'jobs' || tab === 'plumbers') && (<TouchableOpacity onPress={()=>{ setPError(""); setPSuccess(""); setShowAdd(!showAdd); }} style={{ backgroundColor:"#0ABAB5", padding:16, borderRadius:14, marginTop:16 }}><Text style={{ color:"white", textAlign:"center", fontWeight:"900" }}>{showAdd? "✕ Close" : "+ Add Plumber"}</Text></TouchableOpacity>)}
         {showAdd && (
           <View style={{backgroundColor:"white", borderRadius:20, padding:20, marginTop:16, borderWidth:1, borderColor:"#e2e8f0"}}>
             <Text style={{fontSize:18, fontWeight:"900"}}>New Plumber - Select Estate</Text>
             <TextInput placeholder="Full Name *" value={pName} onChangeText={setPName} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:16, backgroundColor:"#f8fafc"}}/>
             <TextInput placeholder="Email *" value={pEmail} onChangeText={setPEmail} autoCapitalize="none" style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:10, backgroundColor:"#f8fafc"}}/>
             <TextInput placeholder="Phone 0712... *" value={pPhone} onChangeText={setPPhone} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:10, backgroundColor:"#f8fafc"}}/>
-            <Text style={{fontSize:13, fontWeight:"800", marginTop:12}}>Estate / Region *</Text>
+            <Text style={{fontSize:13, fontWeight:"800", marginTop:12}}>Estate *</Text>
             <EstatePicker value={pLocation} onChange={setPLocation} />
-            <TextInput placeholder="Temp Password Rapid@2026 *" value={pPass} onChangeText={setPPass} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:12, backgroundColor:"#f8fafc"}}/>
-            {pError ? (<View style={{ backgroundColor:"#fef2f2", padding:12, borderRadius:10, marginTop:12 }}><Text style={{ color:"#dc2626", fontSize:12, fontWeight:"700" }}>⚠️ {pError}</Text></View>) : null}
-            {pSuccess ? (<View style={{ backgroundColor:"#f0fdf4", padding:12, borderRadius:10, marginTop:12 }}><Text style={{ color:"#16a34a", fontSize:12, fontWeight:"700" }}>✅ {pSuccess}</Text></View>) : null}
-            <View style={{flexDirection:"row", gap:10, marginTop:16}}><TouchableOpacity onPress={()=>{ setShowAdd(false); }} style={{flex:1, borderWidth:1, borderColor:"#e2e8f0", padding:14, borderRadius:12}}><Text style={{textAlign:"center", fontWeight:"700"}}>Cancel</Text></TouchableOpacity><TouchableOpacity onPress={addPlumberDirectly} disabled={loading} style={{flex:2, backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:14, borderRadius:12}}>{loading?<ActivityIndicator color="white"/>:<Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>Add in {pLocation} & WhatsApp</Text>}</TouchableOpacity></View>
+            <TextInput placeholder="Temp Password" value={pPass} onChangeText={setPPass} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:12, backgroundColor:"#f8fafc"}}/>
+            {pError ? <View style={{ backgroundColor:"#fef2f2", padding:12, borderRadius:10, marginTop:12 }}><Text style={{ color:"#dc2626", fontSize:12 }}>⚠️ {pError}</Text></View> : null}
+            {pSuccess ? <View style={{ backgroundColor:"#f0fdf4", padding:12, borderRadius:10, marginTop:12 }}><Text style={{ color:"#16a34a", fontSize:12 }}>✅ {pSuccess}</Text></View> : null}
+            <TouchableOpacity onPress={addPlumberDirectly} disabled={loading} style={{backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:14, borderRadius:12, marginTop:16}}>{loading?<ActivityIndicator color="white"/>:<Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>Add in {pLocation}</Text>}</TouchableOpacity>
           </View>
         )}
         {showAddCustomer && (
           <View style={{backgroundColor:"white", borderRadius:20, padding:20, marginTop:16, borderWidth:1, borderColor:"#e2e8f0"}}>
-            <Text style={{fontSize:18, fontWeight:"900"}}>New Customer - Select Estate</Text>
-            <TextInput placeholder="Full Name *" value={cName} onChangeText={setCName} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:16, backgroundColor:"#f8fafc"}}/>
-            <TextInput placeholder="Email *" value={cEmail} onChangeText={setCEmail} autoCapitalize="none" style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:10, backgroundColor:"#f8fafc"}}/>
-            <TextInput placeholder="Phone 0712... *" value={cPhone} onChangeText={setCPhone} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:10, backgroundColor:"#f8fafc"}}/>
-            <Text style={{fontSize:13, fontWeight:"800", marginTop:12}}>Customer Estate *</Text>
+            <Text style={{fontSize:18, fontWeight:"900"}}>New Customer</Text>
+            <TextInput placeholder="Full Name *" value={cName} onChangeText={setCName} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:16}}/>
+            <TextInput placeholder="Email *" value={cEmail} onChangeText={setCEmail} autoCapitalize="none" style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:10}}/>
+            <TextInput placeholder="Phone *" value={cPhone} onChangeText={setCPhone} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:10}}/>
             <EstatePicker value={cLocation} onChange={setCLocation} />
-            <TextInput placeholder="Temp Password Customer@2026 *" value={cPass} onChangeText={setCPass} style={{borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:14, marginTop:12, backgroundColor:"#f8fafc"}}/>
-            {pError ? (<View style={{ backgroundColor:"#fef2f2", padding:12, borderRadius:10, marginTop:12 }}><Text style={{ color:"#dc2626", fontSize:12, fontWeight:"700" }}>⚠️ {pError}</Text></View>) : null}
-            {pSuccess ? (<View style={{ backgroundColor:"#f0fdf4", padding:12, borderRadius:10, marginTop:12 }}><Text style={{ color:"#16a34a", fontSize:12, fontWeight:"700" }}>✅ {pSuccess}</Text></View>) : null}
-            <View style={{flexDirection:"row", gap:10, marginTop:16}}><TouchableOpacity onPress={()=>{ setShowAddCustomer(false); }} style={{flex:1, borderWidth:1, borderColor:"#e2e8f0", padding:14, borderRadius:12}}><Text style={{textAlign:"center", fontWeight:"700"}}>Cancel</Text></TouchableOpacity><TouchableOpacity onPress={addCustomerDirectly} disabled={loading} style={{flex:2, backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:14, borderRadius:12}}>{loading?<ActivityIndicator color="white"/>:<Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>Add in {cLocation}</Text>}</TouchableOpacity></View>
+            <TouchableOpacity onPress={addCustomerDirectly} disabled={loading} style={{backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:14, borderRadius:12, marginTop:16}}>{loading?<ActivityIndicator color="white"/>:<Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>Add in {cLocation}</Text>}</TouchableOpacity>
           </View>
         )}
         {tab==='jobs'? (
@@ -581,13 +557,9 @@ export default function Admin() {
                     <View style={{ backgroundColor: c.bg, paddingHorizontal:10, paddingVertical:5, borderRadius:20 }}><Text style={{ fontSize:10, fontWeight:"800" }}>{c.label}</Text></View>
                   </View>
                   <Text style={{ fontWeight:"700", marginTop:10, color:"#0A1931" }}>{job.category}</Text>
-                  <Text style={{ fontSize:12, color:"#64748b", marginTop:4 }} numberOfLines={2}>{job.description}</Text>
-                  <Text style={{ fontSize:12, color:"#94a3b8", marginTop:6 }}>📍 {job.building_name}, {job.street} {job.plumbers ? `• ${job.plumbers.estate || ""}` : ""}</Text>
+                  <Text style={{ fontSize:12, color:"#94a3b8", marginTop:6 }}>📍 {job.building_name}, {job.street}</Text>
                 </TouchableOpacity>
-                <View style={{ flexDirection:"row", gap:8, marginTop:14, borderTopWidth:1, borderTopColor:"#f1f5f9", paddingTop:12 }}>
-                  <View style={{ flex:1, backgroundColor:"#f8fafc", padding:9, borderRadius:10 }}><Text style={{ textAlign:"center", fontSize:11, color:"#64748b", fontWeight:"600" }}>{new Date(job.created_at).toLocaleDateString()}</Text></View>
-                  <TouchableOpacity onPress={()=>openJob(job)} style={{ flex:2, backgroundColor:"#0A1931", padding:10, borderRadius:10 }}><Text style={{ textAlign:"center", fontWeight:"800", fontSize:12, color:"white" }}>View Details →</Text></TouchableOpacity>
-                </View>
+                <TouchableOpacity onPress={()=>openJob(job)} style={{ backgroundColor:"#0A1931", padding:10, borderRadius:10, marginTop:12 }}><Text style={{ textAlign:"center", fontWeight:"800", fontSize:12, color:"white" }}>View Details →</Text></TouchableOpacity>
               </View>
             )})}
           </View>
@@ -595,10 +567,7 @@ export default function Admin() {
           <View style={{ gap:12, marginTop:20 }}>
             {filteredPlumbers.map(p=>(
               <View key={p.id} style={{ backgroundColor:"white", padding:16, borderRadius:20, borderWidth:1, borderColor:"#e2e8f0" }}>
-                <View style={{ flexDirection:"row", justifyContent:"space-between" }}>
-                  <View style={{ flex:1 }}><Text style={{ fontWeight:"900" }}>{p.plumber_number} • {p.name} • {p.estate || p.location || "No estate"}</Text><Text style={{ fontSize:12, color:"#64748b" }}>{p.email} • {p.phone}</Text></View>
-                  <TouchableOpacity onPress={()=>toggleActive(p)} style={{ backgroundColor: p.active? "#dcfce7" : "#f1f5f9", paddingHorizontal:12, paddingVertical:6, borderRadius:20, alignSelf:"flex-start" }}><Text style={{ fontSize:11, fontWeight:"800" }}>{p.active? "Active" : "Inactive"}</Text></TouchableOpacity>
-                </View>
+                <Text style={{ fontWeight:"900" }}>{p.plumber_number} • {p.name} • {p.estate || p.location}</Text><Text style={{ fontSize:12, color:"#64748b" }}>{p.email} • {p.phone}</Text>
                 <View style={{ flexDirection:"row", gap:8, marginTop:12 }}>
                   <TouchableOpacity onPress={()=>setEditPlumberModal({...p})} style={{ flex:1, backgroundColor:"#f1f5f9", padding:10, borderRadius:10 }}><Text style={{ textAlign:"center", fontWeight:"700", fontSize:12 }}>✏️ Edit</Text></TouchableOpacity>
                   <TouchableOpacity onPress={()=>deletePlumber(p)} style={{ flex:1, backgroundColor:"#fef2f2", padding:10, borderRadius:10 }}><Text style={{ textAlign:"center", fontWeight:"700", fontSize:12, color:"#dc2626" }}>🗑️ Delete</Text></TouchableOpacity>
@@ -606,18 +575,14 @@ export default function Admin() {
               </View>
             ))}
           </View>
-        ) : tab === 'dashboard' ? null : (
+        ) : tab === 'dashboard' ? <View style={{ height:20 }} /> : (
           <View style={{ gap:12, marginTop:20 }}>
             {filteredCustomers.map((c:any)=>(
               <View key={c.id} style={{ backgroundColor:"white", padding:16, borderRadius:20, borderWidth:1, borderColor:"#e2e8f0" }}>
-                <View style={{ flexDirection:"row", gap:10, flex:1 }}>
-                  <View style={{ width:40, height:40, borderRadius:20, backgroundColor:"#0A1931", justifyContent:"center", alignItems:"center" }}><Text style={{ color:"white", fontWeight:"900" }}>{(c.full_name||"C")[0]}</Text></View>
-                  <View style={{ flex:1 }}><Text style={{ fontWeight:"900" }}>{c.full_name} • {c.estate || c.location || ""}</Text><Text style={{ fontSize:12, color:"#64748b" }}>{c.email}</Text><Text style={{ fontSize:12, color:"#64748b" }}>{c.phone}</Text></View>
-                </View>
+                <Text style={{ fontWeight:"900" }}>{c.full_name} • {c.estate || c.location}</Text><Text style={{ fontSize:12, color:"#64748b" }}>{c.email}</Text>
                 <View style={{ flexDirection:"row", gap:8, marginTop:12 }}>
                   <TouchableOpacity onPress={()=>setEditCustomerModal(c)} style={{ flex:1, backgroundColor:"#f1f5f9", padding:10, borderRadius:10 }}><Text style={{ textAlign:"center", fontWeight:"700", fontSize:12 }}>✏️ Edit</Text></TouchableOpacity>
                   <TouchableOpacity onPress={()=>deleteCustomer(c)} style={{ flex:1, backgroundColor:"#fef2f2", padding:10, borderRadius:10 }}><Text style={{ textAlign:"center", fontWeight:"700", fontSize:12, color:"#dc2626" }}>🗑️ Delete</Text></TouchableOpacity>
-                  <TouchableOpacity onPress={()=>{ const wa = formatPhoneForWhatsApp(c.phone||""); Linking.openURL(`https://wa.me/${wa}`); }} style={{ flex:1, backgroundColor:"#dcfce7", padding:10, borderRadius:10 }}><Text style={{ textAlign:"center", fontWeight:"700", fontSize:12, color:"#16a34a" }}>WhatsApp</Text></TouchableOpacity>
                 </View>
               </View>
             ))}

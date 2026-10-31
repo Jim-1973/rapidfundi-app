@@ -15,7 +15,7 @@ export default function PlumberLayout() {
     supabase.auth.getSession().then((res) => {
       const session = res.data.session;
       if (!session) {
-        router.replace("/plumber/login" as any);
+        router.replace("/login" as any);
       } else {
         setUserId(session.user.id);
       }
@@ -25,7 +25,7 @@ export default function PlumberLayout() {
 
   const logout = async () => {
     await supabase.auth.signOut();
-    router.replace("/plumber/login" as any);
+    router.replace("/login" as any);
   };
 
   if (checking) {
