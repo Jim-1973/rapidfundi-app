@@ -9,8 +9,7 @@
     "platforms": ["ios", "android", "web"],
     "android": {
       "package": "com.rapidfundi.app",
-      "versionCode": 4,
-      "minSdkVersion": 24,
+      "versionCode": 5,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png"
@@ -72,11 +71,7 @@
         "expo-build-properties",
         {
           "android": {
-            "enableMinifyInReleaseBuilds": false,
-            "enableProguardInReleaseBuilds": false,
-            "minSdkVersion": 24,
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35
+            "minSdkVersion": 24
           },
           "ios": {
             "deploymentTarget": "16.4"
