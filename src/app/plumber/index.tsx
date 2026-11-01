@@ -7,6 +7,7 @@ import { supabase, notifyCustomer, notifyAdmin, toEAT } from "../../../lib/supab
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 let Notifications: any = null;
 let isExpoGoFlag = true;
@@ -48,13 +49,11 @@ if (Platform.OS !== 'web') {
 
 let MapView: any = null;
 let Marker: any = null;
-let UrlTile: any = null;
 if (Platform.OS !== 'web') {
   try {
     const Maps = require('react-native-maps');
     MapView = Maps.default;
     Marker = Maps.Marker;
-    UrlTile = Maps.UrlTile;
   } catch {}
 }
 
@@ -91,16 +90,45 @@ export default function PlumberApp() {
   const webStreamRef = useRef<any>(null);
   const [completedSummary, setCompletedSummary] = useState<any>(null);
   const [completedMedia, setCompletedMedia] = useState<any[]>([]);
+  const notifiedJobsRef = useRef<Set<string>>(new Set());
 
-  const safeNotify = async (title: string, body: string) => {
+  // STEP 3 FIX: Deduplicated notifications - one per job+status, replaces old instead of spam
+  const safeNotify = async (title: string, body: string, identifier: string) => {
     if (Platform.OS === 'web' || !notifEnabled || !Notifications) return;
-    try { await Notifications.scheduleNotificationAsync({ content: { title, body, sound: true }, trigger: null }); } catch {}
+    try { 
+      // identifier = same ID replaces old notification, not creates new
+      await Notifications.scheduleNotificationAsync({ 
+        content: { title, body, sound: true }, 
+        trigger: null,
+        identifier: identifier
+      }); 
+    } catch {}
   };
+
+  const notifyOncePerJob = async (jobId: string, statusKey: string, title: string, body: string) => {
+    const cacheKey = `${jobId}_${statusKey}`;
+    if(notifiedJobsRef.current.has(cacheKey)) return;
+    const stored = await AsyncStorage.getItem(`notified_${cacheKey}`);
+    if(stored) {
+      notifiedJobsRef.current.add(cacheKey);
+      return;
+    }
+    notifiedJobsRef.current.add(cacheKey);
+    await AsyncStorage.setItem(`notified_${cacheKey}`, "1");
+    await safeNotify(title, body, cacheKey);
+  };
+
   const triggerNewJobPopup = async (job: any) => {
+    const cacheKey = `${job.id}_ASSIGNED`;
+    if(notifiedJobsRef.current.has(cacheKey)) {
+      setPopup(job);
+      setTimeout(()=> setPopup(null), 8000);
+      return;
+    }
     setPopup(job);
     if(Platform.OS !== 'web' && vibrateEnabled) Vibration.vibrate([0, 500, 200, 500]);
     try { Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success); } catch{}
-    await safeNotify(`🔧 NEW JOB ${job.job_number}`, `${job.category} at ${job.building_name}`);
+    await notifyOncePerJob(job.id, "ASSIGNED", `🔧 NEW JOB ${job.job_number}`, `${job.category} at ${job.building_name}`);
     setTimeout(()=> setPopup(null), 8000);
   };
 
@@ -137,14 +165,42 @@ export default function PlumberApp() {
 
   useEffect(()=>{
     const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if(!session){ router.replace("/login" as any); return; }
-      const { data: pl } = await supabase.from('plumbers').select('*').eq('user_id', session.user.id).single();
-      if(!pl){ Alert.alert("Not a plumber account"); await supabase.auth.signOut(); router.replace("/login" as any); return; }
-      if(pl.must_change_password){ router.replace("/plumber/change-password" as any); return; }
-      setPlumberProfile(pl); setAuthChecked(true); fetchJobs(pl.id);
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if(status==='granted'){ const loc = await Location.getCurrentPositionAsync({}); setGps(loc.coords); }
+      try{
+        const { data: { session } } = await supabase.auth.getSession();
+        console.log("CURRENT SESSION USER:", session?.user?.email || "NO SESSION");
+        if(!session){ 
+          setAuthChecked(true);
+          router.replace("/login" as any); 
+          return; 
+        }
+        const { data: pl, error } = await supabase.from('plumbers').select('*').eq('user_id', session.user.id).single();
+        if(error || !pl){ 
+          console.log("Plumber not found for user", session.user.email, error);
+          Alert.alert("Not a plumber account", `Logged as ${session.user.email} but no plumber profile`);
+          await supabase.auth.signOut();
+          await AsyncStorage.clear();
+          try{
+            const SecureStore = require('expo-secure-store');
+            await SecureStore.deleteItemAsync('supabase-auth-token');
+          }catch{}
+          setAuthChecked(true);
+          router.replace("/login" as any); 
+          return; 
+        }
+        if(pl.must_change_password){ 
+          setAuthChecked(true);
+          router.replace("/plumber/change-password" as any); 
+          return; 
+        }
+        setPlumberProfile(pl); 
+        setAuthChecked(true); 
+        fetchJobs(pl.id);
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if(status==='granted'){ const loc = await Location.getCurrentPositionAsync({}); setGps(loc.coords); }
+      }catch(e){
+        console.log("checkAuth error", e);
+        setAuthChecked(true);
+      }
     };
     checkAuth();
     if(Platform.OS !== 'web' && Notifications) {
@@ -175,7 +231,8 @@ export default function PlumberApp() {
       if(newRow?.assigned_plumber_id===plumberProfile.id || oldRow?.assigned_plumber_id===plumberProfile.id) fetchJobs(plumberProfile.id);
       if(selected && newRow && newRow.id===selected.id) setSelected(newRow);
     }).subscribe((s)=>{ if(s==='SUBSCRIBED') setIsLive(true); });
-    pollingRef.current = setInterval(()=>fetchJobs(plumberProfile.id), 4000);
+    if(pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(()=>fetchJobs(plumberProfile.id), 15000);
     return ()=>{ supabase.removeChannel(channel); if(pollingRef.current) clearInterval(pollingRef.current); if(trackingRef.current) clearInterval(trackingRef.current); }
   }, [plumberProfile?.id, selected?.id]);
 
@@ -260,7 +317,6 @@ export default function PlumberApp() {
   };
 
   const openArrivalModal = () => { setArrivalAsset(null); setShowArrivalModal(true); };
-
   const pickArrivalMedia = async () => {
     if (Platform.OS === 'web') {
       setShowWebCamera(true);
@@ -268,10 +324,7 @@ export default function PlumberApp() {
         try {
           const stream = await (navigator.mediaDevices as any).getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
           webStreamRef.current = stream;
-          if (webVideoRef.current) {
-            webVideoRef.current.srcObject = stream;
-            webVideoRef.current.play();
-          }
+          if (webVideoRef.current) { webVideoRef.current.srcObject = stream; webVideoRef.current.play(); }
         } catch (e: any) {
           Alert.alert("Camera blocked", "Allow camera permission in browser. Gallery is disabled - live camera only.");
           setShowWebCamera(false);
@@ -282,16 +335,10 @@ export default function PlumberApp() {
     try {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (perm.status !== 'granted') { Alert.alert("Camera needed"); return; }
-      const result = await ImagePicker.launchCameraAsync({ 
-        mediaTypes: ['images'], 
-        quality: 0.6, 
-        allowsEditing: false,
-        exif: true 
-      });
+      const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.6, allowsEditing: false, exif: true });
       if (!result.canceled && result.assets[0]) setArrivalAsset(result.assets[0]);
     } catch (e: any) { Alert.alert("Camera failed", e.message); }
   };
-
   const captureWebPhoto = () => {
     try {
       const video = webVideoRef.current;
@@ -306,23 +353,15 @@ export default function PlumberApp() {
         if (!blob) return;
         const url = URL.createObjectURL(blob);
         setArrivalAsset({ uri: url, mimeType: 'image/jpeg', file: blob, width: canvas.width, height: canvas.height });
-        if (webStreamRef.current) {
-          webStreamRef.current.getTracks().forEach((t: any) => t.stop());
-          webStreamRef.current = null;
-        }
+        if (webStreamRef.current) { webStreamRef.current.getTracks().forEach((t: any) => t.stop()); webStreamRef.current = null; }
         setShowWebCamera(false);
       }, 'image/jpeg', 0.8);
     } catch (e: any) { Alert.alert("Capture failed", e.message); }
   };
-
   const closeWebCamera = () => {
-    if (webStreamRef.current) {
-      webStreamRef.current.getTracks().forEach((t: any) => t.stop());
-      webStreamRef.current = null;
-    }
+    if (webStreamRef.current) { webStreamRef.current.getTracks().forEach((t: any) => t.stop()); webStreamRef.current = null; }
     setShowWebCamera(false);
   };
-
   const confirmArrivalWithProof = async () => {
     if(!arrivalAsset){ Alert.alert("Required", "Take LIVE photo"); return; }
     setArrivalUploading(true);
@@ -348,15 +387,10 @@ export default function PlumberApp() {
       Alert.alert("✅ ARRIVED", "Live photo saved as proof.");
     }catch(e:any){ Alert.alert("Failed", e.message) } finally{ setArrivalUploading(false) }
   };
-
   const takeCompletionPhoto = async () => {
     setLoading(true);
     try{
-      if (Platform.OS === 'web') {
-        Alert.alert("Use mobile for completion photo", "On web, use your phone app for live camera proof.");
-        setLoading(false);
-        return;
-      }
+      if (Platform.OS === 'web') { Alert.alert("Use mobile for completion photo", "On web, use your phone app for live camera proof."); setLoading(false); return; }
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (perm.status !== 'granted') { Alert.alert("Camera needed"); setLoading(false); return; }
       const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
@@ -368,43 +402,15 @@ export default function PlumberApp() {
       const { error: uploadErr } = await supabase.storage.from('job-evidence').upload(fileName, fileData, { contentType: 'image/jpeg', upsert: true });
       if(uploadErr) throw uploadErr;
       const { data: urlData } = supabase.storage.from('job-evidence').getPublicUrl(fileName);
-      
-      await supabase.from('job_media').insert({ 
-        job_id: selected.id, 
-        type: 'completion_final', 
-        url: urlData.publicUrl, 
-        latitude: location.coords.latitude, 
-        longitude: location.coords.longitude 
-      });
-
+      await supabase.from('job_media').insert({ job_id: selected.id, type: 'completion_final', url: urlData.publicUrl, latitude: location.coords.latitude, longitude: location.coords.longitude });
       const nowIso = new Date().toISOString();
-      const { error } = await supabase.from('jobs').update({ 
-        status: 'completed_awaiting_payment',
-        final_photo_url: urlData.publicUrl,
-        completed_at: nowIso, 
-        updated_at: nowIso 
-      }).eq('id', selected.id);
-
+      const { error } = await supabase.from('jobs').update({ status: 'completed_awaiting_payment', final_photo_url: urlData.publicUrl, completed_at: nowIso, updated_at: nowIso }).eq('id', selected.id);
       if(error){
-        const { error: err2 } = await supabase.from('jobs').update({ 
-          status: 'completed_awaiting_payment',
-          completed_at: nowIso,
-          updated_at: nowIso 
-        }).eq('id', selected.id);
+        const { error: err2 } = await supabase.from('jobs').update({ status: 'completed_awaiting_payment', completed_at: nowIso, updated_at: nowIso }).eq('id', selected.id);
         if(err2) throw err2;
       }
-
       await logPlumberAction(selected.id, 'ARRIVED', 'completed_awaiting_payment', {media_url: urlData.publicUrl});
-      
-      if(selected.customer_id) {
-        await notifyCustomer(
-          selected.customer_id, 
-          "✅ Work Done - Pay Now", 
-          `${plumberProfile.name} completed ${selected.job_number}. Final photo uploaded. Please pay KES ${selected.total_amount} to complete. Completed at ${toEAT(nowIso)} EAT`, 
-          "payment_required", 
-          selected.id
-        );
-      }
+      if(selected.customer_id) { await notifyCustomer(selected.customer_id, "✅ Work Done - Pay Now", `${plumberProfile.name} completed ${selected.job_number}. Final photo uploaded. Please pay KES ${selected.total_amount} to complete. Completed at ${toEAT(nowIso)} EAT`, "payment_required", selected.id); }
       await notifyAdmin("💰 Awaiting Payment", `${plumberProfile.name} completed ${selected.job_number}. Awaiting customer payment KES ${selected.total_amount}.`, "PAYMENT_AWAITING", selected.id);
       const { data: allMedia } = await supabase.from('job_media').select('*').eq('job_id', selected.id).order('created_at',{ascending:true});
       setJobs(prev => prev.map(j => j.id === selected.id ? { ...j, status: 'completed_awaiting_payment', final_photo_url: urlData.publicUrl, completed_at: nowIso, updated_at: nowIso } : j));
@@ -416,7 +422,6 @@ export default function PlumberApp() {
       Alert.alert("✅ Work Done!", `Final photo uploaded. Job is now Awaiting Payment. Time: ${toEAT(nowIso)} EAT`);
     }catch(e:any){ Alert.alert("Failed", e.message); console.log(e) } finally{ setLoading(false) }
   };
-
   const handleHelpSubmit = async () => {
     if (!helpMsg.trim()) { Alert.alert("Write issue"); return; }
     try {
@@ -425,20 +430,12 @@ export default function PlumberApp() {
       Alert.alert("Sent", "Admin will contact you"); setHelpMsg(""); setShowHelp(false);
     } catch (err: any) { Alert.alert("Failed", err.message); }
   };
-
   const pickProfilePhoto = async () => {
     try {
       if (Platform.OS === 'web') {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = 'image/*';
-        input.onchange = async (e: any) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          await uploadAvatarWeb(file);
-        };
-        input.click();
-        return;
+        const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/*';
+        input.onchange = async (e: any) => { const file = e.target.files?.[0]; if (!file) return; await uploadAvatarWeb(file); };
+        input.click(); return;
       }
       const libPerm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (libPerm.status !== 'granted') { Alert.alert("Permission needed", "Allow photo access"); return; }
@@ -461,7 +458,6 @@ export default function PlumberApp() {
       ]);
     } catch (e:any) { Alert.alert("Failed", e.message); }
   };
-
   const uploadAvatarWeb = async (file: File) => {
     setUploadingAvatar(true);
     try {
@@ -475,7 +471,6 @@ export default function PlumberApp() {
       Alert.alert("✅ Success", "Profile photo updated!");
     } catch(e:any){ Alert.alert("Upload failed", e.message); } finally { setUploadingAvatar(false); }
   };
-
   const uploadAvatar = async (uri: string) => {
     setUploadingAvatar(true);
     try {
@@ -502,8 +497,27 @@ export default function PlumberApp() {
   };
 
   const handleLogout = async () => {
-    try{ setShowMenu(false); setShowSettings(false); await supabase.auth.signOut(); }catch(e){ console.log("logout err", e); }
-    finally{ setPlumberProfile(null); setJobs([]); setAuthChecked(false); router.replace("/login" as any); }
+    try{ 
+      setShowMenu(false); setShowSettings(false); 
+      if(trackingRef.current) clearInterval(trackingRef.current);
+      if(pollingRef.current) clearInterval(pollingRef.current);
+      if(Notifications) await Notifications.dismissAllNotificationsAsync().catch(()=>{});
+      await supabase.auth.signOut(); 
+      await AsyncStorage.clear();
+      try{
+        const SecureStore = require('expo-secure-store');
+        await SecureStore.deleteItemAsync('supabase-auth-token');
+        await SecureStore.deleteItemAsync('sb-338767c9-8e70-4613-9408-5159e3e658e3-auth-token');
+      }catch{}
+    }catch(e){ console.log("logout err", e); }
+    finally{ 
+      setPlumberProfile(null); 
+      setJobs([]); 
+      setSelected(null);
+      notifiedJobsRef.current.clear();
+      setAuthChecked(false); 
+      router.replace("/login" as any); 
+    }
   };
 
   const timeAgo = (dateStr: string) => {
@@ -567,9 +581,18 @@ export default function PlumberApp() {
   }
 
   if(selected){
-    const custLat = selected.customer_lat || (selected as any).latitude;
-    const custLng = selected.customer_lng || (selected as any).longitude;
+    const custLatRaw = selected.customer_lat || (selected as any).latitude;
+    const custLngRaw = selected.customer_lng || (selected as any).longitude;
+    const custLat = typeof custLatRaw === 'number' ? custLatRaw : custLatRaw ? Number(custLatRaw) : null;
+    const custLng = typeof custLngRaw === 'number' ? custLngRaw : custLngRaw ? Number(custLngRaw) : null;
+    const hasValidCustomerCoords = custLat !== null && custLng !== null && !isNaN(custLat) && !isNaN(custLng) && Math.abs(custLat) <= 90 && Math.abs(custLng) <= 180;
     const isAcceptedLocal = (selected as any).isAccepted;
+    const mapRegion = hasValidCustomerCoords
+      ? { latitude: custLat!, longitude: custLng!, latitudeDelta: 0.02, longitudeDelta: 0.02 }
+      : gps?.latitude
+      ? { latitude: gps.latitude, longitude: gps.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }
+      : { latitude: -1.2921, longitude: 36.8219, latitudeDelta: 0.1, longitudeDelta: 0.1 };
+
     return (
       <View style={{flex:1, backgroundColor:"#f8fafc"}}>
       <ScrollView style={{flex:1}} contentContainerStyle={{padding:16, paddingTop:50, paddingBottom:30}}>
@@ -583,12 +606,17 @@ export default function PlumberApp() {
           </View>
           <Text style={{fontWeight:"900", fontSize:16, marginTop:12, color:"#0A1931"}}>{selected.category}</Text>
           <Text style={{fontWeight:"600", fontSize:13, color:"#475569", marginTop:2}}>{selected.building_name} • {selected.estate}</Text>
-          <View style={{height:200, borderRadius:16, overflow:"hidden", marginTop:14, borderWidth:1, borderColor:"#e2e8f0"}}>
-            {Platform.OS === 'web' ? <View style={{flex:1, justifyContent:"center", alignItems:"center", backgroundColor:"#f1f5f9"}}><Ionicons name="map" size={32} color="#94a3b8"/></View> : (
-              <MapView style={{flex:1}} initialRegion={{latitude: custLat || gps?.latitude || -1.2921, longitude: custLng || gps?.longitude || 36.8219, latitudeDelta:0.02, longitudeDelta:0.02}}>
-                <UrlTile urlTemplate="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png" maximumZ={19} flipY={false} />
-                {custLat && <Marker coordinate={{latitude: custLat, longitude: custLng}} pinColor="green" />}
-                {gps && <Marker coordinate={{latitude: gps.latitude, longitude: gps.longitude}}><View style={{backgroundColor:"#0A1931", padding:6, borderRadius:20}}><Ionicons name="person" size={14} color="white"/></View></Marker>}
+          <View style={{height:200, borderRadius:16, overflow:"hidden", marginTop:14, borderWidth:1, borderColor:"#e2e8f0", backgroundColor:"#f1f5f9"}}>
+            {Platform.OS === 'web' || !MapView ? (
+              <View style={{flex:1, justifyContent:"center", alignItems:"center", backgroundColor:"#f1f5f9", padding:20}}>
+                <Ionicons name="map-outline" size={32} color="#94a3b8"/>
+                <Text style={{fontSize:12, color:"#64748b", marginTop:8, fontWeight:"600", textAlign:"center"}}>{hasValidCustomerCoords ? "Map preview" : "No GPS - Use NAVIGATE button below"}</Text>
+                <Text style={{fontSize:11, color:"#94a3b8", marginTop:4}}>{selected.estate || selected.building_name}</Text>
+              </View>
+            ) : (
+              <MapView style={{flex:1, width:"100%"}} initialRegion={mapRegion}>
+                {hasValidCustomerCoords && <Marker coordinate={{latitude: custLat!, longitude: custLng!}} pinColor="green" title={selected.building_name} />}
+                {gps?.latitude && <Marker coordinate={{latitude: gps.latitude, longitude: gps.longitude}}><View style={{backgroundColor:"#0A1931", padding:6, borderRadius:20, borderWidth:2, borderColor:"white"}}><Ionicons name="person" size={14} color="white"/></View></Marker>}
               </MapView>
             )}
           </View>
@@ -611,11 +639,7 @@ export default function PlumberApp() {
 
   const isToday = (dateStr: string) => {
     if(!dateStr) return false;
-    try {
-      const d = new Date(dateStr);
-      const now = new Date();
-      return d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-    } catch { return false; }
+    try { const d = new Date(dateStr); const now = new Date(); return d.getDate() === now.getDate() && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); } catch { return false; }
   };
   const isWithin24h = (dateStr: string) => {
     if(!dateStr) return true;
@@ -627,8 +651,7 @@ export default function PlumberApp() {
   let doneTodayJobs = completedJobs.filter((j:any)=> isToday(j.completed_at || j.paid_at || j.updated_at || j.created_at));
   if(doneTodayJobs.length === 0 && completedJobs.length > 0){
     const recent = completedJobs.filter((j:any)=> isWithin24h(j.completed_at || j.updated_at || j.created_at));
-    if(recent.length > 0) doneTodayJobs = recent;
-    else doneTodayJobs = completedJobs;
+    if(recent.length > 0) doneTodayJobs = recent; else doneTodayJobs = completedJobs;
   }
   const finalDoneToday = doneTodayJobs.length + awaitingPaymentJobs.length;
 
