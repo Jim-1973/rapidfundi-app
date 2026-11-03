@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { Platform } from 'react-native'
+import * as SecureStore from 'expo-secure-store'
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY
@@ -11,14 +12,52 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 const isWeb = Platform.OS === 'web';
 
+// === FIXED: SecureStore ONLY - No AsyncStorage fallback that brings ghost back ===
+const SecureStoreAdapter = {
+  getItem: async (key: string) => {
+    try {
+      if (isWeb) {
+        return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+      }
+      // ONLY SecureStore, never AsyncStorage
+      return await SecureStore.getItemAsync(key);
+    } catch {
+      return null;
+    }
+  },
+  setItem: async (key: string, value: string) => {
+    try {
+      if (isWeb) {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(key, value);
+        return;
+      }
+      await SecureStore.setItemAsync(key, value);
+    } catch (e) {
+      console.log("SecureStore setItem error", e);
+    }
+  },
+  removeItem: async (key: string) => {
+    try {
+      if (isWeb) {
+        if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+        return;
+      }
+      await SecureStore.deleteItemAsync(key);
+    } catch {}
+    try {
+      await AsyncStorage.removeItem(key);
+    } catch {}
+  },
+};
+
 export const supabase = createClient(supabaseUrl!, supabaseAnonKey!, {
   auth: {
-    storage: isWeb ? undefined : AsyncStorage as any, // web uses localStorage automatically
+    storage: isWeb ? undefined : (SecureStoreAdapter as any),
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: isWeb ? true : false, // TRUE on web = fixes reset link, FALSE on mobile = prevents warning
-    storageKey: 'rapidfundi-main-auth', // prevents Multiple GoTrueClient warning
-    flowType: 'pkce', // REQUIRED for new Supabase reset links (?code=)
+    detectSessionInUrl: false,
+    storageKey: 'rapidfundi-main-auth',
+    flowType: 'pkce',
   },
   realtime: {
     params: {
@@ -27,7 +66,6 @@ export const supabase = createClient(supabaseUrl!, supabaseAnonKey!, {
   }
 })
 
-// === TEMP CLIENT FOR PLUMBER SIGNUP (NO SESSION PERSIST) ===
 export const supabaseTemp = createClient(supabaseUrl!, supabaseAnonKey!, {
   auth: {
     persistSession: false,
@@ -38,7 +76,6 @@ export const supabaseTemp = createClient(supabaseUrl!, supabaseAnonKey!, {
   }
 })
 
-// === EAT TIMEZONE HELPERS - USE IN ENTIRE PROJECT ===
 export const toEAT = (dateStr?: string | null) => {
   if (!dateStr) return "";
   try {
@@ -60,15 +97,15 @@ export const nowEAT = () => {
   return new Date().toLocaleString("en-KE", { timeZone: "Africa/Nairobi" });
 };
 
-// === NOTIFICATION HELPERS ===
-export const notifyUser = async (userId: string, title: string, message: string, type: string, jobId?: string) => {
+export const notifyUser = async (userId: string, title: string, message: string, type: string, jobId?: string, role: string = 'customer') => {
   const { error } = await supabase.from('notifications').insert({
     user_id: userId,
     title,
     message,
     type,
     job_id: jobId,
-    is_read: false
+    is_read: false,
+    role: role
   } as any)
   if(error) console.log("notifyUser error:", error.message)
 }
@@ -87,9 +124,9 @@ export const notifyAdmin = async (title: string, message: string, type: string, 
 }
 
 export const notifyCustomer = async (customerId: string, title: string, message: string, type: string, jobId?: string) => {
-  return notifyUser(customerId, title, message, type, jobId)
+  return notifyUser(customerId, title, message, type, jobId, 'customer')
 }
 
 export const notifyPlumber = async (plumberUserId: string, title: string, message: string, type: string, jobId?: string) => {
-  return notifyUser(plumberUserId, title, message, type, jobId)
+  return notifyUser(plumberUserId, title, message, type, jobId, 'plumber')
 }

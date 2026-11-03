@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { supabase } from "../../../lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import NotificationBell from "../../components/NotificationBell";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function CustomerLayout() {
   const router = useRouter();
@@ -13,8 +14,11 @@ export default function CustomerLayout() {
   const [userId, setUserId] = useState<string | undefined>();
 
   useEffect(() => {
-    supabase.auth.getSession().then((res) => {
-      const session = res.data.session;
+    let mounted = true;
+    const check = async () => {
+      const { data } = await supabase.auth.getSession();
+      if(!mounted) return;
+      const session = data.session;
       if (!session) {
         router.replace("/login" as any);
       } else {
@@ -22,15 +26,39 @@ export default function CustomerLayout() {
         setUserId(session.user.id);
       }
       setChecking(false);
+    };
+    check();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if(!session && mounted){
+        setHasSession(false);
+        router.replace("/login" as any);
+      } else if(session && mounted){
+        setUserId(session.user.id);
+        setHasSession(true);
+      }
     });
+    
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    }
   }, []);
 
   const logout = async () => {
     const doLogout = async () => {
       try {
         await supabase.auth.signOut();
+        await AsyncStorage.clear();
+        try {
+          const SecureStore = require('expo-secure-store');
+          await SecureStore.deleteItemAsync('rapidfundi-main-auth');
+          await SecureStore.deleteItemAsync('supabase-auth-token');
+          await SecureStore.deleteItemAsync('sb-rapidfundi-main-auth');
+        } catch {}
       } catch {}
       setHasSession(false);
+      setUserId(undefined);
       setTimeout(() => {
         router.replace("/login" as any);
       }, 100);
@@ -69,7 +97,7 @@ export default function CustomerLayout() {
         headerTintColor: "#0A1931",
         headerRight: () => (
           <View style={{flexDirection:"row", alignItems:"center", gap:8, marginRight:12}}>
-            <NotificationBell userId={userId} />
+            {userId ? <NotificationBell userId={userId} role="customer" /> : null}
             <TouchableOpacity onPress={logout} style={{flexDirection:"row", alignItems:"center", gap:6, backgroundColor:"#fee2e2", paddingHorizontal:12, paddingVertical:6, borderRadius:20}}>
               <Ionicons name="log-out-outline" size={16} color="#991b1b" />
               <Text style={{fontWeight:"800", fontSize:12, color:"#991b1b"}}>Logout</Text>
@@ -82,7 +110,7 @@ export default function CustomerLayout() {
         options={{ 
           title: "Request", 
           headerTitle: "RapidFundi",
-          tabBarIcon: ({color}) => <Ionicons name="home" size={22} color={color} /> 
+          tabBarIcon: ({color}: any) => <Ionicons name="home" size={22} color={color} /> 
         }}
       />
       <Tabs.Screen
@@ -90,7 +118,7 @@ export default function CustomerLayout() {
         options={{ 
           title: "My Jobs", 
           headerTitle: "My Jobs",
-          tabBarIcon: ({color}) => <Ionicons name="list" size={22} color={color} /> 
+          tabBarIcon: ({color}: any) => <Ionicons name="list" size={22} color={color} /> 
         }}
       />
       <Tabs.Screen 
@@ -98,7 +126,7 @@ export default function CustomerLayout() {
         options={{ 
           title: "Contact", 
           headerTitle: "Help & Support",
-          tabBarIcon: ({color}) => <Ionicons name="headset" size={22} color={color} /> 
+          tabBarIcon: ({color}: any) => <Ionicons name="headset" size={22} color={color} /> 
         }} 
       />
     </Tabs>

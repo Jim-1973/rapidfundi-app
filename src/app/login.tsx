@@ -46,16 +46,18 @@ export default function Login(){
           throw new Error("Invalid email or password. Please check and try again.");
         }
         if(msg.includes("email not confirmed")){
-          throw new Error("Your email is not confirmed. Please check your inbox or contact admin to disable Confirm Email.");
+          throw new Error("Your email is not confirmed. Please check your inbox or contact support.");
         }
         if(msg.includes("user not found") || msg.includes("not found")){
-          throw new Error(`No account found for ${email}. Please Sign Up as Customer first.`);
+          throw new Error(`No account found for ${email}. Please Sign Up first.`);
         }
         throw new Error(error.message);
       }
 
       const user = data.user;
       if(!user) throw new Error("Login failed. Please try again.");
+
+      await supabase.auth.getSession();
 
       const { data: plumber } = await supabase.from('plumbers').select('must_change_password').eq('user_id', user.id).maybeSingle();
       
@@ -65,11 +67,8 @@ export default function Login(){
         return;
       }
 
-      const isAdmin = user.email?.includes("admin") || user.user_metadata?.role === "admin";
-      
-      if(isAdmin){
-        router.replace("/admin" as any);
-      } else if(plumber){
+      // Only plumber vs customer - admin is hidden and NOT accessible here
+      if(plumber){
         router.replace("/plumber" as any);
       } else {
         router.replace("/(customer)" as any);
@@ -120,7 +119,6 @@ export default function Login(){
         {loading ? <ActivityIndicator color="white"/> : <Text style={{color:"white", textAlign:"center", fontWeight:"800"}}>LOGIN</Text>}
       </TouchableOpacity>
 
-      {/* PROFESSIONAL SAME LINE BELOW LOGIN */}
       <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center", marginTop:16}}>
         <Link href={"/signup" as any}>
           <Text style={{color:"#64748b", fontWeight:"600", fontSize:13}}>Don't have account? <Text style={{color:"#0ABAB5", fontWeight:"800"}}>Sign Up</Text></Text>

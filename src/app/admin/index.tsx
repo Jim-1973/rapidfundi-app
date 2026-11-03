@@ -5,8 +5,8 @@ import { notifyCustomer, notifyPlumber } from "../../../lib/notifications";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import AdminJobTimeline from "./job-timeline";
+import { createQuotationReceipt, getPendingPayouts, markPlumberPaid } from "../../../lib/receipts";
 
-// FIXED: Removed expo-av to fix R8 build error - no interference
 let Notifications: any = null;
 let isExpoGoFlagAdmin = true;
 if (Platform.OS !== 'web') {
@@ -57,10 +57,10 @@ export default function Admin() {
   const [selectedInquiries, setSelectedInquiries] = useState<any[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   const [media, setMedia] = useState<any[]>([]);
-  const [quote, setQuote] = useState({ labour: "", materials: "", materialsList: "", fee: "4", notes: "" });
+  const [quote, setQuote] = useState({ labour: "", materials: "", materialsList: "", notes: "" });
   const [adminReply, setAdminReply] = useState("");
   const [loading, setLoading] = useState(false);
-  const [tab, setTab] = useState<'dashboard'|'jobs'|'plumbers'|'customers'>('dashboard');
+  const [tab, setTab] = useState<'dashboard'|'jobs'|'plumbers'|'customers'|'payouts'>('dashboard');
   const [showAdd, setShowAdd] = useState(false);
   const [pName, setPName] = useState(""); const [pEmail, setPEmail] = useState(""); const [pPhone, setPPhone] = useState(""); const [pPass, setPPass] = useState("Rapid@2026"); const [pSkill, setPSkill] = useState("Water Supply"); const [pLocation, setPLocation] = useState("Westlands");
   const [showAddCustomer, setShowAddCustomer] = useState(false);
@@ -68,6 +68,7 @@ export default function Admin() {
   const [editPlumberModal, setEditPlumberModal] = useState<any>(null); const [editCustomerModal, setEditCustomerModal] = useState<any>(null);
   const [search, setSearch] = useState(""); const [pError, setPError] = useState(""); const [pSuccess, setPSuccess] = useState(""); const [isLive, setIsLive] = useState(false); const [lastUpdate, setLastUpdate] = useState<string>(""); const [newJobAlert, setNewJobAlert] = useState<any>(null);
   const [inquiries, setInquiries] = useState<any[]>([]);
+  const [payouts, setPayouts] = useState<any[]>([]);
 
   const getStatusColor = (status: string) => {
     switch(status){
@@ -101,6 +102,10 @@ export default function Admin() {
       setCustomers(cust||[]);
       const { data: inq } = await supabase.from('job_inquiries').select('*, jobs(job_number, building_name, estate)').eq('status','PENDING').order('created_at', {ascending:false}).limit(20);
       setInquiries(inq||[]);
+      try{
+        const pending = await getPendingPayouts();
+        setPayouts(pending);
+      }catch{}
       setLastUpdate(new Date().toLocaleTimeString());
     }catch(e:any){ console.error(e); } finally { if(showLoader) setLoading(false); }
   };
@@ -274,22 +279,6 @@ export default function Admin() {
     }catch(e:any){ Alert.alert("Failed", e.message); } finally { setLoading(false); }
   };
 
-  const quickResolveWithoutReply = async (inq:any) => {
-    Alert.alert("Resolve without reply?", "Customer will be notified question is resolved", [
-      { text:"Cancel", style:"cancel" },
-      { text:"Resolve", onPress: async ()=>{
-        setLoading(true);
-        try{
-          await supabase.from('job_inquiries').update({ status: 'RESOLVED', resolved_at: new Date().toISOString() }).eq('id', inq.id);
-          if(selected?.customer_id){ await notifyCustomer(selected.customer_id, `✅ Question Resolved - ${selected.job_number}`, "Your question has been marked as resolved. Check updated quotation.", "INQUIRY_RESOLVED", selected.id); }
-          setSelectedInquiries(prev => prev.filter(i=>i.id!==inq.id));
-          if(selectedInquiries.length <= 1){ setTimeout(async ()=>{ setSelected(null); await fetchJobs(true); }, 400); }
-          else await fetchJobs();
-        }catch(e:any){ Alert.alert("Failed", e.message); } finally { setLoading(false); }
-      }}
-    ])
-  };
-
   const createQuotation = async () => {
     if(!selected) return; 
     if(!quote.labour || !quote.materials || !quote.materialsList){ 
@@ -297,13 +286,40 @@ export default function Admin() {
     } 
     setLoading(true);
     try{
-      const total = (parseFloat(quote.labour)||0)+(parseFloat(quote.materials)||0)+(parseFloat(quote.fee)||0);
+      const total = (parseFloat(quote.labour)||0)+(parseFloat(quote.materials)||0);
       const qNum = `RFQ-${selected.job_number.split('-').pop()}`;
-      const { error: jobError } = await supabase.from('jobs').update({ status: 'QUOTATION_PREPARED', labour_cost: parseFloat(quote.labour), materials_cost: parseFloat(quote.materials), materials_list: quote.materialsList, total_amount: total, service_fee: parseFloat(quote.fee)||4, quotation_details: `Labour KES ${quote.labour} | Materials: ${quote.materialsList} = KES ${quote.materials} | Fee ${quote.fee}` }).eq('id', selected.id);
+      const { error: jobError } = await supabase.from('jobs').update({ 
+        status: 'QUOTATION_PREPARED', 
+        labour_cost: parseFloat(quote.labour), 
+        materials_cost: parseFloat(quote.materials), 
+        materials_list: quote.materialsList, 
+        total_amount: total,
+        quotation_details: `Labour KES ${quote.labour} | Materials: ${quote.materialsList} = KES ${quote.materials}` 
+      }).eq('id', selected.id);
       if(jobError) throw new Error(jobError.message);
       try {
-        await supabase.from('quotations').insert({ job_id: selected.id, quotation_number: qNum, labour: parseFloat(quote.labour)||0, materials: parseFloat(quote.materials)||0, materials_list: quote.materialsList, service_fee: parseFloat(quote.fee)||4, total, notes: quote.notes || adminReply, status: 'PENDING' });
+        await supabase.from('quotations').insert({ 
+          job_id: selected.id, 
+          quotation_number: qNum, 
+          labour: parseFloat(quote.labour)||0, 
+          materials: parseFloat(quote.materials)||0, 
+          materials_list: quote.materialsList, 
+          total, 
+          notes: quote.notes || adminReply, 
+          status: 'PENDING' 
+        });
       } catch(qErr){ console.log("Quotation insert warning:", qErr); }
+
+      try{
+        await createQuotationReceipt({ 
+          id: selected.id, 
+          job_number: selected.job_number, 
+          customer_id: selected.customer_id, 
+          labour_cost: parseFloat(quote.labour), 
+          materials_cost: parseFloat(quote.materials), 
+          materials_list: quote.materialsList 
+        });
+      }catch(rErr){ console.log("Receipt create warning", rErr); }
       
       if(selected.customer_id){
         if(selectedInquiries.length > 0){
@@ -311,11 +327,11 @@ export default function Admin() {
           await notifyCustomer(selected.customer_id, `💰 Updated Quotation - ${selected.job_number} - KES ${total.toLocaleString()}`, `${replyMsg} - New total KES ${total.toLocaleString()}: ${quote.materialsList}`, "QUOTATION_READY", selected.id);
           await supabase.from('job_inquiries').update({ status: 'RESOLVED', admin_reply: replyMsg, resolved_at: new Date().toISOString() }).eq('job_id', selected.id).eq('status','PENDING');
         } else {
-          await notifyCustomer(selected.customer_id, `💰 Quotation Ready`, `${selected.job_number} - KES ${total.toLocaleString()}: Labour ${quote.labour} + Materials ${quote.materials} + Fee ${quote.fee}`, "QUOTATION_READY", selected.id);
+          await notifyCustomer(selected.customer_id, `💰 Quotation Ready`, `${selected.job_number} - KES ${total.toLocaleString()}: Labour ${quote.labour} + Materials ${quote.materials}`, "QUOTATION_READY", selected.id);
         }
       }
-      Alert.alert("Sent & Notified ✅", `KES ${total.toLocaleString()} sent to customer. ${selectedInquiries.length>0 ? "Customer question answered." : ""}`);
-      setSelected(null); setSelectedInquiries([]); setQuote({ labour: "", materials: "", materialsList: "", fee: "4", notes: "" }); setAdminReply(""); fetchJobs(true);
+      Alert.alert("Sent & Notified ✅", `KES ${total.toLocaleString()} sent to customer.`);
+      setSelected(null); setSelectedInquiries([]); setQuote({ labour: "", materials: "", materialsList: "", notes: "" }); setAdminReply(""); fetchJobs(true);
     }catch(e:any){ Alert.alert("Failed: " + e.message); } finally { setLoading(false); }
   };
 
@@ -355,13 +371,11 @@ export default function Admin() {
       p.coverage_area?.some((a:string)=> a?.toLowerCase() === selected.building_name?.toLowerCase())
     ));
     const otherPlumbers = plumbers.filter(p=>p.active && !sameRegionPlumbers.find(s=>s.id===p.id));
-    const customerPhone = selectedCustomer?.phone || "";
-    const waNumber = customerPhone ? formatPhoneForWhatsApp(customerPhone) : "";
     return (
       <ScrollView style={{ flex:1, backgroundColor:"white" }} contentContainerStyle={{ padding:20, paddingTop:50 }}>
         <TouchableOpacity onPress={()=>setSelected(null)}><Text style={{ color:"#0ABAB5", fontWeight:"800" }}>← Back to Dashboard</Text></TouchableOpacity>
         <View style={{ flexDirection:"row", justifyContent:"space-between", marginTop:16 }}><Text style={{ fontSize:22, fontWeight:"900" }}>{selected.job_number}</Text><Text style={{ fontSize:11, fontWeight:"800", backgroundColor: c.bg, paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}>{c.label}</Text></View>
-        <View style={{ backgroundColor:"#f8fafc", padding:16, borderRadius:16, marginTop:16 }}><Text style={{ fontWeight:"800" }}>{selected.category}</Text><Text style={{ marginTop:6 }}>{selected.description}</Text><Text style={{ fontWeight:"600", marginTop:8 }}>📍 {selected.building_name}, {selected.street}</Text><Text style={{ marginTop:4, fontSize:12, color:"#0ABAB5", fontWeight:"700" }}>Region: {selected.building_name}</Text></View>
+        <View style={{ backgroundColor:"#f8fafc", padding:16, borderRadius:16, marginTop:16 }}><Text style={{ fontWeight:"800" }}>{selected.category}</Text><Text style={{ marginTop:6 }}>{selected.description}</Text><Text style={{ fontWeight:"600", marginTop:8 }}>📍 {selected.building_name}, {selected.street}</Text></View>
         {selected.plumbers && (<View style={{ backgroundColor:"#f0fdfa", borderWidth:1, borderColor:"#0ABAB5", padding:14, borderRadius:14, marginTop:12, flexDirection:"row", alignItems:"center", gap:12 }}><View style={{ width:44, height:44, borderRadius:22, backgroundColor:"#0A1931", justifyContent:"center", alignItems:"center" }}><Text style={{ color:"white", fontWeight:"900" }}>{selected.plumbers.name?.[0]}</Text></View><View style={{ flex:1 }}><Text style={{ fontSize:11, fontWeight:"800", color:"#0ABAB5" }}>ASSIGNED PLUMBER</Text><Text style={{ fontWeight:"900" }}>{selected.plumbers.name} • {selected.plumbers.plumber_number}</Text><Text style={{ fontSize:13 }}>📞 {selected.plumbers.phone}</Text></View></View>)}
         <View style={{ flexDirection:"row", flexWrap:"wrap", gap:8, marginTop:16 }}>{media.map((m,i)=>(<Image key={i} source={{uri: m.url}} style={{ width:100, height:100, borderRadius:12 }} />))}</View>
         
@@ -389,7 +403,7 @@ export default function Admin() {
           <View style={{ backgroundColor:"#ffffff", borderRadius:20, marginTop:20, borderWidth:1, borderColor:"#e5e7eb", overflow:"hidden" }}>
             <View style={{ padding:20, borderBottomWidth:1, borderBottomColor:"#f1f5f9" }}>
               <Text style={{ fontWeight:"900", fontSize:15, color:"#0A1931" }}>{selectedInquiries.length > 0 ? "Update Quotation" : "Create Quotation"}</Text>
-              <Text style={{ fontSize:11, color:"#94a3b8", marginTop:4 }}>Service Fee is now KES 4</Text>
+              <Text style={{ fontSize:11, color:"#94a3b8", marginTop:4 }}>Labour + Materials = Total (No service fee)</Text>
             </View>
             <View style={{ padding:20, gap:16 }}>
               <View>
@@ -410,17 +424,12 @@ export default function Admin() {
                   <TextInput placeholder="3000" keyboardType="numeric" value={quote.materials} onChangeText={t=>setQuote({...quote, materials:t})} style={{ flex:1, paddingVertical:14, paddingHorizontal:10 }} />
                 </View>
               </View>
-              <View style={{ flexDirection:"row", alignItems:"center", backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, paddingHorizontal:14 }}>
-                <Text style={{ fontWeight:"800", color:"#64748b", fontSize:12 }}>FEE KES</Text>
-                <TextInput value={quote.fee} onChangeText={t=>setQuote({...quote, fee:t})} keyboardType="numeric" style={{ flex:1, paddingVertical:14, paddingHorizontal:10, fontWeight:"700" }} />
-                <Text style={{ fontSize:10, color:"#0ABAB5", fontWeight:"800" }}>4 BOB</Text>
-              </View>
               <View style={{ backgroundColor:"#0A1931", borderRadius:14, padding:16, flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
-                <Text style={{ color:"#94a3b8", fontSize:10, fontWeight:"700" }}>TOTAL = Labour + Materials + Fee</Text>
-                <Text style={{ color:"white", fontWeight:"900", fontSize:18 }}>KES {((parseFloat(quote.labour)||0)+(parseFloat(quote.materials)||0)+(parseFloat(quote.fee)||0)).toLocaleString()}</Text>
+                <Text style={{ color:"#94a3b8", fontSize:10, fontWeight:"700" }}>TOTAL = Labour + Materials</Text>
+                <Text style={{ color:"white", fontWeight:"900", fontSize:18 }}>KES {((parseFloat(quote.labour)||0)+(parseFloat(quote.materials)||0)).toLocaleString()}</Text>
               </View>
               <TouchableOpacity onPress={createQuotation} disabled={loading} style={{ backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:16, borderRadius:12 }}>
-                {loading ? <ActivityIndicator color="white" /> : <Text style={{ color:"white", textAlign:"center", fontWeight:"800" }}>{selectedInquiries.length > 0 ? "Update & Notify" : "Send Quotation (KES 4 fee)"}</Text>}
+                {loading ? <ActivityIndicator color="white" /> : <Text style={{ color:"white", textAlign:"center", fontWeight:"800" }}>{selectedInquiries.length > 0 ? "Update & Notify Customer" : "Send Quotation"}</Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -429,36 +438,16 @@ export default function Admin() {
         {selected.status === 'QUOTATION_APPROVED' && (
           <View style={{ backgroundColor:"#f0fdfa", padding:16, borderRadius:16, marginTop:20, borderWidth:1, borderColor:"#0ABAB5" }}>
             <Text style={{ fontWeight:"900", fontSize:16 }}>Admin Assign Plumber - Manual</Text>
-            <Text style={{ fontSize:12, color:"#64748b", marginTop:4 }}>Customer in {selected.building_name} • {sameRegionPlumbers.length} plumbers in area • {otherPlumbers.length} others</Text>
-            
-            {sameRegionPlumbers.length > 0 && (
-              <View style={{ marginTop:12 }}>
-                <Text style={{ fontSize:11, fontWeight:"900", color:"#0ABAB5" }}>📍 IN {selected.building_name?.toUpperCase()} ({sameRegionPlumbers.length})</Text>
-                {sameRegionPlumbers.map(p=>(
-                  <TouchableOpacity key={p.id} onPress={()=>assignPlumber(p)} style={{ backgroundColor:"white", padding:14, borderRadius:12, marginTop:8, borderWidth:2, borderColor:"#0ABAB5", flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
-                    <View style={{ flex:1 }}>
-                      <Text style={{ fontWeight:"800" }}>{p.plumber_number} - {p.name}</Text>
-                      <Text style={{ fontSize:11, color:"#475569" }}>📍 {p.estate || p.location} • ⭐ {p.rating}</Text>
-                      <Text style={{ fontSize:11 }}>📞 {p.phone}</Text>
-                    </View>
-                    <View style={{ backgroundColor:"#0A1931", paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}><Text style={{ color:"white", fontSize:11, fontWeight:"800" }}>ASSIGN</Text></View>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-
-            <View style={{ marginTop:16 }}>
-              <Text style={{ fontSize:11, fontWeight:"800", color: sameRegionPlumbers.length>0 ? "#94a3b8" : "#0A1931" }}>{sameRegionPlumbers.length>0 ? `OTHER ESTATES (${otherPlumbers.length})` : `AVAILABLE PLUMBERS (${otherPlumbers.length})`}</Text>
-              {otherPlumbers.map(p=>(
-                <TouchableOpacity key={p.id} onPress={()=>assignPlumber(p)} style={{ backgroundColor:"white", padding:14, borderRadius:12, marginTop:8, borderWidth:1, borderColor:"#e2e8f0" }}>
-                  <Text style={{ fontWeight:"700" }}>{p.plumber_number} - {p.name} • {p.estate || p.location}</Text>
-                  <Text style={{ fontSize:11 }}>📞 {p.phone}</Text>
-                </TouchableOpacity>
-              ))}
-              {otherPlumbers.length===0 && sameRegionPlumbers.length===0 && (
-                <Text style={{ marginTop:8, fontSize:12, color:"#94a3b8" }}>No active plumbers. Add one in {selected.building_name}</Text>
-              )}
-            </View>
+            <Text style={{ fontSize:12, color:"#64748b", marginTop:4 }}>Customer in {selected.building_name} • {sameRegionPlumbers.length} plumbers in area</Text>
+            {sameRegionPlumbers.map(p=>(
+              <TouchableOpacity key={p.id} onPress={()=>assignPlumber(p)} style={{ backgroundColor:"white", padding:14, borderRadius:12, marginTop:8, borderWidth:2, borderColor:"#0ABAB5", flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
+                <View style={{ flex:1 }}>
+                  <Text style={{ fontWeight:"800" }}>{p.plumber_number} - {p.name}</Text>
+                  <Text style={{ fontSize:11 }}>📍 {p.estate || p.location} • ⭐ {p.rating}</Text>
+                </View>
+                <View style={{ backgroundColor:"#0A1931", paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}><Text style={{ color:"white", fontSize:11, fontWeight:"800" }}>ASSIGN</Text></View>
+              </TouchableOpacity>
+            ))}
           </View>
         )}
       </ScrollView>
@@ -491,10 +480,11 @@ export default function Admin() {
           <View>
             <View style={{ flexDirection:"row", alignItems:"center", gap:10 }}><View style={{ width:40, height:40, borderRadius:12, backgroundColor:"white", justifyContent:"center", alignItems:"center" }}><Text>🔧</Text></View><View><Text style={{ color:"white", fontWeight:"900", fontSize:18 }}>RapidFundi</Text><Text style={{ color:"#0ABAB5", fontSize:11 }}>Plumber Platform</Text></View></View>
             <View style={{ marginTop:32, gap:6 }}>
-              <TouchableOpacity onPress={()=>setTab('dashboard')} style={{ backgroundColor: tab==='dashboard' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='dashboard' ? "#0A1931" : "#94a3b8", fontWeight:"800" }}>🏠 Dashboard</Text></TouchableOpacity>
+              <TouchableOpacity onPress={()=>setTab('dashboard')} style={{ backgroundColor: tab==='dashboard' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='dashboard' ? "#0A1931" : "#94a3b8", fontWeight:"800" }}>🏠 Dashboard {tab==='dashboard' ? '' : ''}</Text></TouchableOpacity>
               <TouchableOpacity onPress={()=>setTab('plumbers')} style={{ backgroundColor: tab==='plumbers' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='plumbers' ? "#0A1931" : "#94a3b8", fontWeight:"600" }}>👥 Plumbers</Text></TouchableOpacity>
               <TouchableOpacity onPress={()=>setTab('jobs')} style={{ backgroundColor: tab==='jobs' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='jobs' ? "#0A1931" : "#94a3b8", fontWeight:"600" }}>📋 Jobs</Text></TouchableOpacity>
               <TouchableOpacity onPress={()=>setTab('customers')} style={{ backgroundColor: tab==='customers' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='customers' ? "#0A1931" : "#94a3b8", fontWeight:"600" }}>👤 Customers</Text></TouchableOpacity>
+              <TouchableOpacity onPress={()=>setTab('payouts')} style={{ backgroundColor: tab==='payouts' ? "#FACC15" : "transparent", padding:14, borderRadius:12 }}><Text style={{ color: tab==='payouts' ? "#0A1931" : "#94a3b8", fontWeight:"600" }}>💰 Payouts ({payouts.length})</Text></TouchableOpacity>
             </View>
           </View>
         </View>
@@ -503,7 +493,7 @@ export default function Admin() {
         <View style={{ flexDirection:"row", justifyContent:"space-between" }}>
           <View style={{ flex:1 }}>
             <View style={{flexDirection:"row", alignItems:"center", gap:8}}><Text style={{ fontSize: IS_WEB ? 36 : 26, fontWeight:"900", color:"#0A1931" }}>Dashboard</Text>{isLive && <View style={{flexDirection:"row", alignItems:"center", backgroundColor:"#dcfce7", paddingHorizontal:8, paddingVertical:3, borderRadius:12, gap:4}}><View style={{width:6, height:6, borderRadius:3, backgroundColor:"#22c55e"}}/><Text style={{fontSize:10, fontWeight:"900", color:"#16a34a"}}>LIVE</Text></View>}</View>
-            <Text style={{ color:"#64748b", marginTop:4 }}>{jobs.length} jobs • {plumbers.length} plumbers • {customers.length} customers</Text>
+            <Text style={{ color:"#64748b", marginTop:4 }}>{jobs.length} jobs • {plumbers.length} plumbers • {customers.length} customers • {payouts.length} pending payouts</Text>
           </View>
           <TouchableOpacity onPress={()=>fetchJobs(true)} style={{ backgroundColor:"white", padding:12, borderRadius:12, borderWidth:1, borderColor:"#e2e8f0" }}><Text>↻</Text></TouchableOpacity>
         </View>
@@ -512,7 +502,7 @@ export default function Admin() {
           <StatCard icon="👥" label="Active Plumbers" value={activePlumbers || plumbers.length} sub={`↑ +${activePlumbers} this week`} subColor="#16a34a" />
           <StatCard icon="📋" label="Pending Jobs" value={pendingJobs} sub={`↓ -${pendingJobs>2?2:pendingJobs}`} subColor="#d97706" />
           <StatCard icon="✅" label="Completed Today" value={completedToday} sub={`↑ +${completedToday}`} subColor="#16a34a" />
-          <StatCard icon="💰" label="Revenue" value={`Ksh ${revenue.toLocaleString()}`} sub="↑ +12%" subColor="#16a34a" />
+          <StatCard icon="💰" label="Pending Payouts" value={payouts.length} sub={`${payouts.reduce((s:any,p:any)=>s+(p.plumber_share||0),0).toLocaleString()} KES`} subColor="#d97706" />
         </View>
         <View style={{ flexDirection: IS_WEB ? "row" : "column", gap:16, marginTop:24 }}>
           <View style={{ flex: IS_WEB ? 1.6 : 1, backgroundColor:"white", borderRadius:20, padding:20, borderWidth:1, borderColor:"#eef2f7" }}>
@@ -521,11 +511,12 @@ export default function Admin() {
             {filteredJobs.slice(0,5).map((job:any)=>{ const st = getStatusColor(job.status); return (<TouchableOpacity key={job.id} onPress={()=>openJob(job)} style={{ flexDirection:"row", alignItems:"center", paddingVertical:14, borderBottomWidth:1, borderBottomColor:"#f1f5f9" }}><Text style={{ flex:0.8, fontWeight:"800", fontSize:12 }}>{job.job_number}</Text><Text style={{ flex:1, fontSize:12 }}>{job.building_name?.slice(0,12)}</Text><Text style={{ flex:1.2, fontSize:12 }}>{job.plumbers?.name || "—"}</Text><View style={{ flex:1 }}><View style={{ backgroundColor:st.bg, paddingHorizontal:10, paddingVertical:4, borderRadius:12, alignSelf:"flex-start" }}><Text style={{ fontSize:10, fontWeight:"800" }}>{st.label}</Text></View></View></TouchableOpacity>)})}
           </View>
         </View>
-        <View style={{ flexDirection:"row", gap:8, marginTop:28 }}>
+        <View style={{ flexDirection:"row", gap:8, marginTop:28, flexWrap:"wrap" }}>
           <TouchableOpacity onPress={()=>setTab('dashboard')} style={{ backgroundColor: tab==='dashboard'? "#0A1931" : "white", padding:12, borderRadius:12, borderWidth:1 }}><Text style={{ textAlign:"center", fontWeight:"800", color: tab==='dashboard'? "white" : "#0A1931", fontSize:12 }}>Overview</Text></TouchableOpacity>
           <TouchableOpacity onPress={()=>setTab('jobs')} style={{ backgroundColor: tab==='jobs'? "#0A1931" : "white", padding:12, borderRadius:12, borderWidth:1 }}><Text style={{ textAlign:"center", fontWeight:"800", color: tab==='jobs'? "white" : "#0A1931", fontSize:12 }}>Jobs ({filteredJobs.length})</Text></TouchableOpacity>
           <TouchableOpacity onPress={()=>setTab('plumbers')} style={{ backgroundColor: tab==='plumbers'? "#0A1931" : "white", padding:12, borderRadius:12, borderWidth:1 }}><Text style={{ textAlign:"center", fontWeight:"800", color: tab==='plumbers'? "white" : "#0A1931", fontSize:12 }}>Plumbers ({filteredPlumbers.length})</Text></TouchableOpacity>
           <TouchableOpacity onPress={()=>setTab('customers')} style={{ backgroundColor: tab==='customers'? "#0A1931" : "white", padding:12, borderRadius:12, borderWidth:1 }}><Text style={{ textAlign:"center", fontWeight:"800", color: tab==='customers'? "white" : "#0A1931", fontSize:12 }}>Customers ({filteredCustomers.length})</Text></TouchableOpacity>
+          <TouchableOpacity onPress={()=>setTab('payouts')} style={{ backgroundColor: tab==='payouts'? "#0A1931" : "white", padding:12, borderRadius:12, borderWidth:1 }}><Text style={{ textAlign:"center", fontWeight:"800", color: tab==='payouts'? "white" : "#0A1931", fontSize:12 }}>💰 Payouts ({payouts.length})</Text></TouchableOpacity>
         </View>
         {tab === 'customers' && (<TouchableOpacity onPress={()=>{ setPError(""); setPSuccess(""); setShowAddCustomer(!showAddCustomer); }} style={{ backgroundColor:"#0A1931", padding:16, borderRadius:14, marginTop:16 }}><Text style={{ color:"white", textAlign:"center", fontWeight:"900" }}>{showAddCustomer? "✕ Close" : "+ Add Customer Manually"}</Text></TouchableOpacity>)}
         {(tab === 'dashboard' || tab === 'jobs' || tab === 'plumbers') && (<TouchableOpacity onPress={()=>{ setPError(""); setPSuccess(""); setShowAdd(!showAdd); }} style={{ backgroundColor:"#0ABAB5", padding:16, borderRadius:14, marginTop:16 }}><Text style={{ color:"white", textAlign:"center", fontWeight:"900" }}>{showAdd? "✕ Close" : "+ Add Plumber"}</Text></TouchableOpacity>)}
@@ -582,6 +573,29 @@ export default function Admin() {
                 </View>
               </View>
             ))}
+          </View>
+        ) : tab === 'payouts' ? (
+          <View style={{ gap:12, marginTop:20 }}>
+            <Text style={{ fontWeight:"900", fontSize:18 }}>Pending Plumber Payouts - End of Day</Text>
+            <Text style={{ fontSize:12, color:"#64748b" }}>Plumber gets 50% of Labour only. Pay at end of day.</Text>
+            {payouts.map((p:any)=>(
+              <View key={p.id} style={{ backgroundColor:"white", padding:16, borderRadius:16, borderWidth:1, borderColor:"#fde68a" }}>
+                <Text style={{ fontWeight:"800" }}>{p.plumbers?.plumber_number} - {p.plumbers?.name} • {p.plumbers?.phone}</Text>
+                <Text style={{ fontSize:12, color:"#64748b", marginTop:4 }}>{p.job_number} - {p.jobs?.building_name}, {p.jobs?.estate}</Text>
+                <Text style={{ fontWeight:"900", marginTop:8, fontSize:16 }}>KES {p.plumber_share?.toLocaleString()} (50% of Labour KES {p.labour?.toLocaleString()})</Text>
+                <Text style={{ fontSize:10, color:"#d97706", marginTop:4 }}>⏳ UNPAID - {new Date(p.created_at).toLocaleString()} - Receipt {p.receipt_number}</Text>
+                <TouchableOpacity onPress={async ()=>{
+                  try{
+                    await markPlumberPaid(p.id);
+                    Alert.alert("Paid ✅", `${p.plumbers?.name} marked as PAID - ${p.plumber_share} KES`);
+                    setPayouts(prev=>prev.filter(x=>x.id!==p.id));
+                  }catch(e:any){ Alert.alert("Failed", e.message); }
+                }} style={{ backgroundColor:"#0A1931", padding:14, borderRadius:12, marginTop:12 }}>
+                  <Text style={{ color:"white", textAlign:"center", fontWeight:"800" }}>Mark as PAID - After M-Pesa</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            {payouts.length===0 && <View style={{ backgroundColor:"white", padding:30, borderRadius:16, alignItems:"center" }}><Text style={{ fontSize:32 }}>✅</Text><Text style={{ fontWeight:"800", marginTop:8 }}>All Clear</Text><Text style={{ color:"#94a3b8", fontSize:12, marginTop:4 }}>No pending payouts - All plumbers paid</Text></View>}
           </View>
         ) : tab === 'dashboard' ? <View style={{ height:20 }} /> : (
           <View style={{ gap:12, marginTop:20 }}>

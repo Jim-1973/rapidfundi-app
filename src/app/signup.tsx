@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, Alert, ActivityIndicator, Scro
 import { Ionicons } from "@expo/vector-icons";
 import { supabase } from "../../lib/supabase";
 import { useRouter } from "expo-router";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const ESTATES = ["Westlands","Kasarani","Kilimani","CBD","Lavington","Karen","Embakasi","Parklands","South B","Eastlands","Langata","Rongai","Kileleshwa","Syokimau","Umoja","Donholm","Buruburu","Kitengela","Ruaka"];
 
@@ -43,6 +44,12 @@ export default function Signup(){
     if(!validate()) return;
     setLoading(true);
     try{
+      // FIX: Wipe any ghost customer session before new signup
+      try {
+        await AsyncStorage.clear();
+        await supabase.auth.signOut();
+      } catch {}
+
       const { data, error } = await supabase.auth.signUp({
         email: email.trim().toLowerCase(), 
         password,
@@ -71,7 +78,13 @@ export default function Signup(){
           });
         }
       }
-      Alert.alert("Success", `Welcome! Account in ${estate} created.`);
+      // FIX: Force logout after signup so ghost session doesn't auto-login wrong account
+      try {
+        await supabase.auth.signOut();
+        await AsyncStorage.clear();
+      } catch {}
+
+      Alert.alert("Success", `Welcome! Account in ${estate} created. Please login.`);
       router.replace("/login" as any);
     }catch(e:any){ 
       Alert.alert("Error", e.message); 

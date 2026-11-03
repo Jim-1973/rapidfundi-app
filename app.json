@@ -6,7 +6,11 @@
     "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "android": {
       "package": "com.rapidfundi.app",
       "versionCode": 5,
@@ -76,7 +80,9 @@
             "deploymentTarget": "16.4"
           }
         }
-      ]
+      ],
+      "expo-secure-store",
+      "expo-sharing"
     ],
     "extra": {
       "eas": {

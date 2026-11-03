@@ -8,14 +8,13 @@ import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createFinalReceipts } from "../../../lib/receipts";
 
 let Notifications: any = null;
-let isExpoGoFlag = true;
 if (Platform.OS !== 'web') {
   try {
     const Constants = require('expo-constants').default;
     const isExpoGo = Constants?.appOwnership === 'expo' || Constants?.executionEnvironment === 'storeClient';
-    isExpoGoFlag = isExpoGo;
     if (!isExpoGo) {
       Notifications = require('expo-notifications');
       (async () => {
@@ -43,18 +42,7 @@ if (Platform.OS !== 'web') {
     }
   } catch {
     Notifications = null;
-    isExpoGoFlag = true;
   }
-}
-
-let MapView: any = null;
-let Marker: any = null;
-if (Platform.OS !== 'web') {
-  try {
-    const Maps = require('react-native-maps');
-    MapView = Maps.default;
-    Marker = Maps.Marker;
-  } catch {}
 }
 
 export default function PlumberApp() {
@@ -92,11 +80,9 @@ export default function PlumberApp() {
   const [completedMedia, setCompletedMedia] = useState<any[]>([]);
   const notifiedJobsRef = useRef<Set<string>>(new Set());
 
-  // STEP 3 FIX: Deduplicated notifications - one per job+status, replaces old instead of spam
   const safeNotify = async (title: string, body: string, identifier: string) => {
     if (Platform.OS === 'web' || !notifEnabled || !Notifications) return;
     try { 
-      // identifier = same ID replaces old notification, not creates new
       await Notifications.scheduleNotificationAsync({ 
         content: { title, body, sound: true }, 
         trigger: null,
@@ -167,7 +153,6 @@ export default function PlumberApp() {
     const checkAuth = async () => {
       try{
         const { data: { session } } = await supabase.auth.getSession();
-        console.log("CURRENT SESSION USER:", session?.user?.email || "NO SESSION");
         if(!session){ 
           setAuthChecked(true);
           router.replace("/login" as any); 
@@ -175,8 +160,7 @@ export default function PlumberApp() {
         }
         const { data: pl, error } = await supabase.from('plumbers').select('*').eq('user_id', session.user.id).single();
         if(error || !pl){ 
-          console.log("Plumber not found for user", session.user.email, error);
-          Alert.alert("Not a plumber account", `Logged as ${session.user.email} but no plumber profile`);
+          Alert.alert("Not a plumber account", `Logged as ${session.user.email}`);
           await supabase.auth.signOut();
           await AsyncStorage.clear();
           try{
@@ -410,6 +394,22 @@ export default function PlumberApp() {
         if(err2) throw err2;
       }
       await logPlumberAction(selected.id, 'ARRIVED', 'completed_awaiting_payment', {media_url: urlData.publicUrl});
+
+      // === RECEIPTS: Customer PAID, Plumber UNPAID (end of day) ===
+      try{
+        const jobForReceipt = {
+          id: selected.id,
+          job_number: selected.job_number,
+          customer_id: selected.customer_id,
+          labour_cost: selected.labour_cost || selected.labour || 0,
+          materials_cost: selected.materials_cost || selected.materials || 0,
+          materials_list: selected.materials_list || '',
+          building_name: selected.building_name,
+          estate: selected.estate
+        };
+        await createFinalReceipts(jobForReceipt, plumberProfile);
+      }catch(receiptErr){ console.log("Receipt create failed", receiptErr); }
+
       if(selected.customer_id) { await notifyCustomer(selected.customer_id, "✅ Work Done - Pay Now", `${plumberProfile.name} completed ${selected.job_number}. Final photo uploaded. Please pay KES ${selected.total_amount} to complete. Completed at ${toEAT(nowIso)} EAT`, "payment_required", selected.id); }
       await notifyAdmin("💰 Awaiting Payment", `${plumberProfile.name} completed ${selected.job_number}. Awaiting customer payment KES ${selected.total_amount}.`, "PAYMENT_AWAITING", selected.id);
       const { data: allMedia } = await supabase.from('job_media').select('*').eq('job_id', selected.id).order('created_at',{ascending:true});
@@ -419,7 +419,7 @@ export default function PlumberApp() {
       setCompletedSummary({...selected, status: 'completed_awaiting_payment', final_photo_url: urlData.publicUrl, completed_at: nowIso});
       setSelected(null);
       fetchJobs();
-      Alert.alert("✅ Work Done!", `Final photo uploaded. Job is now Awaiting Payment. Time: ${toEAT(nowIso)} EAT`);
+      Alert.alert("✅ Work Done!", `Final photo uploaded. Job is now Awaiting Payment. Payout will be processed end of day. Time: ${toEAT(nowIso)} EAT`);
     }catch(e:any){ Alert.alert("Failed", e.message); console.log(e) } finally{ setLoading(false) }
   };
   const handleHelpSubmit = async () => {
@@ -498,7 +498,7 @@ export default function PlumberApp() {
 
   const handleLogout = async () => {
     try{ 
-      setShowMenu(false); setShowSettings(false); 
+      setShowMenu(false); setShowSettings(false); setShowHelp(false);
       if(trackingRef.current) clearInterval(trackingRef.current);
       if(pollingRef.current) clearInterval(pollingRef.current);
       if(Notifications) await Notifications.dismissAllNotificationsAsync().catch(()=>{});
@@ -507,7 +507,6 @@ export default function PlumberApp() {
       try{
         const SecureStore = require('expo-secure-store');
         await SecureStore.deleteItemAsync('supabase-auth-token');
-        await SecureStore.deleteItemAsync('sb-338767c9-8e70-4613-9408-5159e3e658e3-auth-token');
       }catch{}
     }catch(e){ console.log("logout err", e); }
     finally{ 
@@ -536,7 +535,7 @@ export default function PlumberApp() {
           <View style={{alignItems:"center", marginBottom:24}}>
             <View style={{width:80, height:80, borderRadius:40, backgroundColor: isAwaitingPayment ? "#fef3c7" : "#dcfce7", justifyContent:"center", alignItems:"center"}}><Ionicons name={isAwaitingPayment ? "time" : "checkmark-done"} size={40} color={isAwaitingPayment ? "#d97706" : "#16a34a"}/></View>
             <Text style={{fontSize:24, fontWeight:"900", color:"#0A1931", marginTop:16}}>{isAwaitingPayment ? "Awaiting Payment" : "Job Completed!"}</Text>
-            <Text style={{fontSize:13, color:"#64748b", marginTop:4, textAlign:"center"}}>{isAwaitingPayment ? `Customer will pay - M-Pesa prompt outside app` : `Great work, ${plumberProfile?.name}`}</Text>
+            <Text style={{fontSize:13, color:"#64748b", marginTop:4, textAlign:"center"}}>{isAwaitingPayment ? `Customer will pay - Payout pending end of day` : `Great work, ${plumberProfile?.name}`}</Text>
           </View>
           <View style={{backgroundColor:"#f8fafc", borderRadius:20, padding:16, borderWidth:1, borderColor:"#e2e8f0"}}>
             <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
@@ -551,8 +550,8 @@ export default function PlumberApp() {
                 <Text style={{fontSize:12, fontWeight:"700", marginTop:4}}>{toEAT(completedSummary.completed_at)}</Text>
               </View>
               <View style={{flex:1, backgroundColor:"white", borderRadius:12, padding:12, borderWidth:1, borderColor:"#e2e8f0"}}>
-                <Text style={{fontSize:10, fontWeight:"800", color:"#94a3b8"}}>STATUS</Text>
-                <Text style={{fontSize:12, fontWeight:"700", marginTop:4}}>{isAwaitingPayment ? "Awaiting Pay" : "Completed"}</Text>
+                <Text style={{fontSize:10, fontWeight:"800", color:"#94a3b8"}}>PAYOUT</Text>
+                <Text style={{fontSize:12, fontWeight:"700", marginTop:4}}>End of day</Text>
               </View>
             </View>
             {completedSummary.final_photo_url && (
@@ -581,58 +580,78 @@ export default function PlumberApp() {
   }
 
   if(selected){
-    const custLatRaw = selected.customer_lat || (selected as any).latitude;
-    const custLngRaw = selected.customer_lng || (selected as any).longitude;
-    const custLat = typeof custLatRaw === 'number' ? custLatRaw : custLatRaw ? Number(custLatRaw) : null;
-    const custLng = typeof custLngRaw === 'number' ? custLngRaw : custLngRaw ? Number(custLngRaw) : null;
-    const hasValidCustomerCoords = custLat !== null && custLng !== null && !isNaN(custLat) && !isNaN(custLng) && Math.abs(custLat) <= 90 && Math.abs(custLng) <= 180;
-    const isAcceptedLocal = (selected as any).isAccepted;
-    const mapRegion = hasValidCustomerCoords
-      ? { latitude: custLat!, longitude: custLng!, latitudeDelta: 0.02, longitudeDelta: 0.02 }
-      : gps?.latitude
-      ? { latitude: gps.latitude, longitude: gps.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }
-      : { latitude: -1.2921, longitude: 36.8219, latitudeDelta: 0.1, longitudeDelta: 0.1 };
-
     return (
       <View style={{flex:1, backgroundColor:"#f8fafc"}}>
       <ScrollView style={{flex:1}} contentContainerStyle={{padding:16, paddingTop:50, paddingBottom:30}}>
         <TouchableOpacity onPress={()=>{ setSelected(null); fetchJobs(); }} style={{flexDirection:"row", alignItems:"center", gap:4, marginBottom:16, backgroundColor:"white", alignSelf:"flex-start", paddingHorizontal:12, paddingVertical:6, borderRadius:20, borderWidth:1, borderColor:"#e2e8f0"}}>
           <Ionicons name="chevron-back" size={16} color="#0A1931"/><Text style={{color:"#0A1931", fontWeight:"800", fontSize:12}}>Back to Jobs</Text>
         </TouchableOpacity>
+        
         <View style={{backgroundColor:"white", borderRadius:20, padding:16, borderWidth:1, borderColor:"#e2e8f0"}}>
           <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
             <View style={{backgroundColor:"#0A1931", paddingHorizontal:10, paddingVertical:5, borderRadius:8}}><Text style={{color:"white", fontSize:11, fontWeight:"900"}}>{selected.job_number}</Text></View>
             <View style={{backgroundColor: selected.status==='EN_ROUTE' ? "#ffedd5" : selected.status==='completed_awaiting_payment' ? "#fef3c7" : "#dcfce7", paddingHorizontal:10, paddingVertical:5, borderRadius:20, flexDirection:"row", alignItems:"center", gap:4}}><View style={{width:6, height:6, borderRadius:3, backgroundColor: selected.status==='EN_ROUTE' ? "#f59e0b" : selected.status==='completed_awaiting_payment' ? "#d97706" : "#22c55e"}}/><Text style={{fontSize:10, fontWeight:"900"}}>{selected.status === 'completed_awaiting_payment' ? 'AWAITING PAYMENT' : selected.status}</Text></View>
           </View>
-          <Text style={{fontWeight:"900", fontSize:16, marginTop:12, color:"#0A1931"}}>{selected.category}</Text>
+          <Text style={{fontWeight:"900", fontSize:18, marginTop:12, color:"#0A1931"}}>{selected.category}</Text>
           <Text style={{fontWeight:"600", fontSize:13, color:"#475569", marginTop:2}}>{selected.building_name} • {selected.estate}</Text>
-          <View style={{height:200, borderRadius:16, overflow:"hidden", marginTop:14, borderWidth:1, borderColor:"#e2e8f0", backgroundColor:"#f1f5f9"}}>
-            {Platform.OS === 'web' || !MapView ? (
-              <View style={{flex:1, justifyContent:"center", alignItems:"center", backgroundColor:"#f1f5f9", padding:20}}>
-                <Ionicons name="map-outline" size={32} color="#94a3b8"/>
-                <Text style={{fontSize:12, color:"#64748b", marginTop:8, fontWeight:"600", textAlign:"center"}}>{hasValidCustomerCoords ? "Map preview" : "No GPS - Use NAVIGATE button below"}</Text>
-                <Text style={{fontSize:11, color:"#94a3b8", marginTop:4}}>{selected.estate || selected.building_name}</Text>
+
+          <TouchableOpacity onPress={openGoogleMaps} activeOpacity={0.85} style={{marginTop:14, backgroundColor:"white", borderRadius:16, borderWidth:1.2, borderColor:"#0A1931", padding:14}}>
+            <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
+              <View style={{flexDirection:"row", alignItems:"center", gap:10, flex:1}}>
+                <View style={{width:42, height:42, borderRadius:12, backgroundColor:"#0A1931", justifyContent:"center", alignItems:"center"}}>
+                  <Ionicons name="location-sharp" size={20} color="white"/>
+                </View>
+                <View style={{flex:1}}>
+                  <View style={{flexDirection:"row", alignItems:"center", gap:6}}>
+                    <Text style={{fontSize:10, fontWeight:"900", color:"#0ABAB5", letterSpacing:1}}>CUSTOMER LOCATION</Text>
+                    <View style={{backgroundColor:"#0A1931", paddingHorizontal:6, paddingVertical:2, borderRadius:6}}>
+                      <Text style={{fontSize:8, fontWeight:"900", color:"white"}}>TAP TO NAVIGATE</Text>
+                    </View>
+                  </View>
+                  <Text style={{fontSize:13, fontWeight:"900", color:"#0A1931", marginTop:3}} numberOfLines={1}>{selected.building_name}</Text>
+                  <Text style={{fontSize:11, fontWeight:"600", color:"#475569", marginTop:1}} numberOfLines={1}>{selected.estate}{selected.street ? ` • ${selected.street}` : ""}</Text>
+                </View>
               </View>
-            ) : (
-              <MapView style={{flex:1, width:"100%"}} initialRegion={mapRegion}>
-                {hasValidCustomerCoords && <Marker coordinate={{latitude: custLat!, longitude: custLng!}} pinColor="green" title={selected.building_name} />}
-                {gps?.latitude && <Marker coordinate={{latitude: gps.latitude, longitude: gps.longitude}}><View style={{backgroundColor:"#0A1931", padding:6, borderRadius:20, borderWidth:2, borderColor:"white"}}><Ionicons name="person" size={14} color="white"/></View></Marker>}
-              </MapView>
-            )}
-          </View>
+              <View style={{width:32, height:32, borderRadius:16, backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", justifyContent:"center", alignItems:"center"}}>
+                <Ionicons name="open-outline" size={16} color="#0A1931"/>
+              </View>
+            </View>
+          </TouchableOpacity>
         </View>
+
         <View style={{marginTop:16, gap:12}}>
-          {selected.status==='ASSIGNED' && !isAcceptedLocal && <View style={{flexDirection:"row", gap:12}}><TouchableOpacity onPress={acceptJob} style={{flex:1, backgroundColor:"#22c55e", padding:16, borderRadius:14, alignItems:"center"}}><Text style={{color:"white", fontWeight:"900"}}>ACCEPT</Text></TouchableOpacity><TouchableOpacity onPress={()=>setShowDeclineModal(true)} style={{flex:1, backgroundColor:"white", borderWidth:1.5, borderColor:"#fecaca", padding:16, borderRadius:14, alignItems:"center"}}><Text style={{color:"#ef4444", fontWeight:"900"}}>DECLINE</Text></TouchableOpacity></View>}
-          {(selected.status==='ASSIGNED' && isAcceptedLocal) && <View style={{gap:10}}><TouchableOpacity onPress={markEnRoute} style={{backgroundColor:"#f59e0b", padding:18, borderRadius:14, alignItems:"center"}}><Text style={{color:"white", fontWeight:"900"}}>ON THE WAY</Text></TouchableOpacity><TouchableOpacity onPress={openGoogleMaps} style={{backgroundColor:"white", borderWidth:1.5, borderColor:"#0A1931", padding:16, borderRadius:14, alignItems:"center"}}><Text style={{color:"#0A1931", fontWeight:"800"}}>NAVIGATE</Text></TouchableOpacity></View>}
-          {selected.status==='EN_ROUTE' && <View style={{gap:10}}><TouchableOpacity onPress={openGoogleMaps} style={{backgroundColor:"#0A1931", padding:18, borderRadius:14, alignItems:"center"}}><Text style={{color:"white", fontWeight:"900"}}>🗺️ NAVIGATE</Text></TouchableOpacity><TouchableOpacity onPress={openArrivalModal} style={{backgroundColor:"#0ABAB5", padding:18, borderRadius:14, alignItems:"center"}}><Text style={{color:"white", fontWeight:"900"}}>I HAVE ARRIVED</Text></TouchableOpacity></View>}
+          {selected.status==='ASSIGNED' && !(selected as any).isAccepted && (
+            <View style={{flexDirection:"row", gap:12}}>
+              <TouchableOpacity onPress={acceptJob} style={{flex:1, backgroundColor:"#22c55e", padding:16, borderRadius:14, alignItems:"center"}}><Text style={{color:"white", fontWeight:"900"}}>ACCEPT</Text></TouchableOpacity>
+              <TouchableOpacity onPress={()=>setShowDeclineModal(true)} style={{flex:1, backgroundColor:"white", borderWidth:1.5, borderColor:"#fecaca", padding:16, borderRadius:14, alignItems:"center"}}><Text style={{color:"#ef4444", fontWeight:"900"}}>DECLINE</Text></TouchableOpacity>
+            </View>
+          )}
+          {(selected.status==='ASSIGNED' && (selected as any).isAccepted) && (
+            <TouchableOpacity onPress={markEnRoute} style={{backgroundColor:"#f59e0b", padding:18, borderRadius:14, alignItems:"center"}}><Text style={{color:"white", fontWeight:"900"}}>ON THE WAY 🚚</Text></TouchableOpacity>
+          )}
+          {selected.status==='EN_ROUTE' && (
+            <TouchableOpacity onPress={openArrivalModal} style={{backgroundColor:"#0ABAB5", padding:18, borderRadius:14, alignItems:"center"}}><Text style={{color:"white", fontWeight:"900"}}>I HAVE ARRIVED 📍</Text></TouchableOpacity>
+          )}
           {selected.status==='ARRIVED' && <TouchableOpacity onPress={takeCompletionPhoto} disabled={loading} style={{backgroundColor: loading ? "#94a3b8" : "#0A1931", padding:18, borderRadius:14, alignItems:"center"}}>{loading ? <ActivityIndicator color="white"/> : <Text style={{color:"white", fontWeight:"900"}}>WORK DONE - UPLOAD FINAL PHOTO</Text>}</TouchableOpacity>}
-          {selected.status==='completed_awaiting_payment' && <View style={{backgroundColor:"#fef3c7", borderWidth:1, borderColor:"#fbbf24", padding:16, borderRadius:14}}><Text style={{fontWeight:"900", color:"#92400e"}}>⏳ Awaiting Customer Payment</Text><Text style={{fontSize:12, color:"#78350f", marginTop:4}}>Final photo uploaded at {toEAT(selected.completed_at)} EAT. Customer will complete payment.</Text>{selected.final_photo_url && <Image source={{uri: selected.final_photo_url}} style={{width:"100%", height:180, borderRadius:10, marginTop:10}}/>}</View>}
-          {selected.status==='paid' && <View style={{backgroundColor:"#dcfce7", borderWidth:1, borderColor:"#22c55e", padding:16, borderRadius:14}}><Text style={{fontWeight:"900", color:"#166534"}}>✅ PAID - {toEAT(selected.paid_at)} EAT</Text><Text style={{fontSize:12, color:"#15803d", marginTop:4}}>Customer payment completed.</Text></View>}
+          {selected.status==='completed_awaiting_payment' && <View style={{backgroundColor:"#fef3c7", borderWidth:1, borderColor:"#fbbf24", padding:16, borderRadius:14}}><Text style={{fontWeight:"900", color:"#92400e"}}>⏳ Awaiting Customer Payment</Text><Text style={{fontSize:12, color:"#78350f", marginTop:4}}>Final photo uploaded at {toEAT(selected.completed_at)} EAT. Customer will complete payment. Your payout pending end of day.</Text>{selected.final_photo_url && <Image source={{uri: selected.final_photo_url}} style={{width:"100%", height:180, borderRadius:10, marginTop:10}}/>}</View>}
+          {selected.status==='paid' && <View style={{backgroundColor:"#dcfce7", borderWidth:1, borderColor:"#22c55e", padding:16, borderRadius:14}}><Text style={{fontWeight:"900", color:"#166534"}}>✅ PAID - {toEAT(selected.paid_at)} EAT</Text></View>}
         </View>
       </ScrollView>
-      <Modal visible={showDeclineModal} transparent animationType="slide"><View style={{flex:1, backgroundColor:"rgba(0,0,0,0.5)", justifyContent:"flex-end"}}><TouchableOpacity style={{flex:1}} onPress={()=>setShowDeclineModal(false)}/><View style={{backgroundColor:"white", borderTopLeftRadius:24, borderTopRightRadius:24, padding:20}}><View style={{flexDirection:"row", justifyContent:"space-between"}}><Text style={{fontSize:18, fontWeight:"900"}}>Decline Job?</Text><TouchableOpacity onPress={()=>setShowDeclineModal(false)} style={{width:32, height:32, borderRadius:16, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={16} color="#0A1931"/></TouchableOpacity></View><TouchableOpacity onPress={confirmDecline} style={{backgroundColor:"#ef4444", padding:16, borderRadius:14, marginTop:16, alignItems:"center"}}><Text style={{color:"white", fontWeight:"800"}}>Confirm Decline</Text></TouchableOpacity></View></View></Modal>
-      <Modal visible={showArrivalModal} animationType="slide"><View style={{flex:1, backgroundColor:"white", padding:20, paddingTop:60}}><View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}><View><Text style={{fontSize:22, fontWeight:"900", color:"#0A1931"}}>Record Before Work</Text><Text style={{color:"#64748b", marginTop:4, fontSize:12}}>LIVE camera only - Gallery blocked</Text></View><TouchableOpacity onPress={()=>setShowArrivalModal(false)} style={{width:36, height:36, borderRadius:18, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={18} color="#0A1931"/></TouchableOpacity></View><TouchableOpacity onPress={pickArrivalMedia} style={{backgroundColor:"#0A1931", padding:18, borderRadius:14, marginTop:20, flexDirection:"row", justifyContent:"center", gap:8}}><Ionicons name="camera" size={20} color="white"/><Text style={{color:"white", fontWeight:"900"}}>{arrivalAsset ? "RETAKE LIVE PHOTO" : "TAKE LIVE PHOTO"}</Text></TouchableOpacity>{arrivalAsset ? <View style={{marginTop:20}}><Image source={{uri: arrivalAsset.uri}} style={{width:"100%", height:340, borderRadius:16}}/><View style={{backgroundColor:"#dcfce7", paddingHorizontal:10, paddingVertical:5, borderRadius:8, marginTop:10, alignSelf:"flex-start", flexDirection:"row", gap:4}}><Ionicons name="checkmark-circle" size={14} color="#16a34a"/><Text style={{fontSize:11, fontWeight:"800", color:"#166534"}}>Live photo captured</Text></View></View> : <View style={{marginTop:24, borderWidth:1.5, borderStyle:"dashed", borderColor:"#cbd5e1", borderRadius:16, padding:32, alignItems:"center", backgroundColor:"#f8fafc"}}><Ionicons name="camera-outline" size={30} color="#64748b"/><Text style={{fontWeight:"800", marginTop:12}}>No live photo yet</Text></View>}<TouchableOpacity onPress={confirmArrivalWithProof} disabled={arrivalUploading || !arrivalAsset} style={{backgroundColor: !arrivalAsset ? "#94a3b8" : "#22c55e", padding:18, borderRadius:14, marginTop:24, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:8}}>{arrivalUploading ? <ActivityIndicator color="white"/> : <><Ionicons name="checkmark-done" size={18} color="white"/><Text style={{color:"white", fontWeight:"900"}}>CONFIRM ARRIVAL & START WORK</Text></>}</TouchableOpacity></View></Modal>
-      <Modal visible={showWebCamera} animationType="slide"><View style={{flex:1, backgroundColor:"black", padding:20, paddingTop:50}}><View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}><Text style={{color:"white", fontWeight:"900", fontSize:18}}>LIVE Camera - No Gallery</Text><TouchableOpacity onPress={closeWebCamera} style={{width:36, height:36, borderRadius:18, backgroundColor:"rgba(255,255,255,0.2)", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={20} color="white"/></TouchableOpacity></View><View style={{flex:1, marginTop:20, borderRadius:16, overflow:"hidden", backgroundColor:"#111"}}><video ref={webVideoRef} autoPlay playsInline muted style={{width:"100%", height:"100%", objectFit:"cover"}} /></View><TouchableOpacity onPress={captureWebPhoto} style={{backgroundColor:"#22c55e", padding:18, borderRadius:14, marginTop:16, flexDirection:"row", justifyContent:"center", gap:8, alignItems:"center"}}><Ionicons name="camera" size={22} color="white"/><Text style={{color:"white", fontWeight:"900", fontSize:16}}>CAPTURE LIVE PHOTO</Text></TouchableOpacity></View></Modal>
+
+      <Modal visible={showDeclineModal} transparent animationType="slide">
+        <View style={{flex:1, backgroundColor:"rgba(0,0,0,0.5)", justifyContent:"flex-end"}}>
+          <TouchableOpacity style={{flex:1}} onPress={()=>setShowDeclineModal(false)}/>
+          <View style={{backgroundColor:"white", borderTopLeftRadius:24, borderTopRightRadius:24, padding:20}}>
+            <View style={{flexDirection:"row", justifyContent:"space-between"}}><Text style={{fontSize:18, fontWeight:"900"}}>Decline Job?</Text><TouchableOpacity onPress={()=>setShowDeclineModal(false)} style={{width:32, height:32, borderRadius:16, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={16}/></TouchableOpacity></View>
+            <View style={{marginTop:16, gap:10}}>{["Too far","Busy","Not my area","Other"].map(r=>(<TouchableOpacity key={r} onPress={()=>setDeclineReason(r)} style={{padding:14, borderRadius:12, borderWidth:1.5, borderColor: declineReason===r ? "#0A1931" : "#e2e8f0", backgroundColor: declineReason===r ? "#f8fafc" : "white"}}><Text style={{fontWeight: declineReason===r ? "900" : "600"}}>{r}</Text></TouchableOpacity>))}</View>
+            {declineReason==="Other" && <TextInput value={declineCustom} onChangeText={setDeclineCustom} placeholder="Reason..." style={{marginTop:12, borderWidth:1, borderColor:"#e2e8f0", borderRadius:12, padding:12}}/>}
+            <TouchableOpacity onPress={confirmDecline} style={{backgroundColor:"#ef4444", padding:16, borderRadius:14, marginTop:16, alignItems:"center"}}><Text style={{color:"white", fontWeight:"800"}}>Confirm Decline</Text></TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showArrivalModal} animationType="slide"><View style={{flex:1, backgroundColor:"white", padding:20, paddingTop:60}}><View style={{flexDirection:"row", justifyContent:"space-between"}}><View><Text style={{fontSize:22, fontWeight:"900"}}>Record Before Work</Text><Text style={{color:"#64748b", fontSize:12, marginTop:4}}>LIVE camera only</Text></View><TouchableOpacity onPress={()=>setShowArrivalModal(false)} style={{width:36, height:36, borderRadius:18, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={18}/></TouchableOpacity></View><TouchableOpacity onPress={pickArrivalMedia} style={{backgroundColor:"#0A1931", padding:18, borderRadius:14, marginTop:20, flexDirection:"row", justifyContent:"center", gap:8}}><Ionicons name="camera" size={20} color="white"/><Text style={{color:"white", fontWeight:"900"}}>{arrivalAsset ? "RETAKE LIVE PHOTO" : "TAKE LIVE PHOTO"}</Text></TouchableOpacity>{arrivalAsset ? <View style={{marginTop:20}}><Image source={{uri: arrivalAsset.uri}} style={{width:"100%", height:340, borderRadius:16}}/><View style={{backgroundColor:"#dcfce7", paddingHorizontal:10, paddingVertical:5, borderRadius:8, marginTop:10, alignSelf:"flex-start", flexDirection:"row", gap:4}}><Ionicons name="checkmark-circle" size={14} color="#16a34a"/><Text style={{fontSize:11, fontWeight:"800", color:"#166534"}}>Live photo captured</Text></View></View> : <View style={{marginTop:24, borderWidth:1.5, borderStyle:"dashed", borderColor:"#cbd5e1", borderRadius:16, padding:32, alignItems:"center", backgroundColor:"#f8fafc"}}><Ionicons name="camera-outline" size={30} color="#64748b"/><Text style={{fontWeight:"800", marginTop:12}}>No live photo yet</Text></View>}<TouchableOpacity onPress={confirmArrivalWithProof} disabled={arrivalUploading || !arrivalAsset} style={{backgroundColor: !arrivalAsset ? "#94a3b8" : "#22c55e", padding:18, borderRadius:14, marginTop:24, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:8}}>{arrivalUploading ? <ActivityIndicator color="white"/> : <><Ionicons name="checkmark-done" size={18} color="white"/><Text style={{color:"white", fontWeight:"900"}}>CONFIRM ARRIVAL & START WORK</Text></>}</TouchableOpacity></View></Modal>
+      <Modal visible={showWebCamera} animationType="slide"><View style={{flex:1, backgroundColor:"black", padding:20, paddingTop:50}}><View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}><Text style={{color:"white", fontWeight:"900", fontSize:18}}>LIVE Camera</Text><TouchableOpacity onPress={closeWebCamera} style={{width:36, height:36, borderRadius:18, backgroundColor:"rgba(255,255,255,0.2)", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={20} color="white"/></TouchableOpacity></View><View style={{flex:1, marginTop:20, borderRadius:16, overflow:"hidden", backgroundColor:"#111"}}><video ref={webVideoRef} autoPlay playsInline muted style={{width:"100%", height:"100%", objectFit:"cover"}} /></View><TouchableOpacity onPress={captureWebPhoto} style={{backgroundColor:"#22c55e", padding:18, borderRadius:14, marginTop:16, flexDirection:"row", justifyContent:"center", gap:8, alignItems:"center"}}><Ionicons name="camera" size={22} color="white"/><Text style={{color:"white", fontWeight:"900", fontSize:16}}>CAPTURE LIVE PHOTO</Text></TouchableOpacity></View></Modal>
       </View>
     )
   }
@@ -645,15 +664,18 @@ export default function PlumberApp() {
     if(!dateStr) return true;
     try { return (Date.now() - new Date(dateStr).getTime()) < 24*60*60*1000; } catch { return true; }
   };
-  const activeJobs = jobs.filter((j:any)=>['ASSIGNED','EN_ROUTE','ARRIVED','completed_awaiting_payment'].includes(j.status));
+  
+  const activeJobs = jobs.filter((j:any)=>['ASSIGNED','EN_ROUTE','ARRIVED'].includes(j.status));
   const awaitingPaymentJobs = jobs.filter((j:any)=>j.status==='completed_awaiting_payment');
   const completedJobs = jobs.filter((j:any)=>['COMPLETED','paid'].includes(j.status));
+  
   let doneTodayJobs = completedJobs.filter((j:any)=> isToday(j.completed_at || j.paid_at || j.updated_at || j.created_at));
   if(doneTodayJobs.length === 0 && completedJobs.length > 0){
     const recent = completedJobs.filter((j:any)=> isWithin24h(j.completed_at || j.updated_at || j.created_at));
-    if(recent.length > 0) doneTodayJobs = recent; else doneTodayJobs = completedJobs;
+    if(recent.length > 0) doneTodayJobs = recent; else doneTodayJobs = [];
   }
-  const finalDoneToday = doneTodayJobs.length + awaitingPaymentJobs.length;
+  const finalDoneToday = doneTodayJobs.length;
+  const totalActiveCount = activeJobs.length + awaitingPaymentJobs.length;
 
   return (
     <View style={{flex:1, backgroundColor:"#f8fafc"}}>
@@ -671,13 +693,13 @@ export default function PlumberApp() {
               <TouchableOpacity onPress={()=>setShowSettings(true)} style={{width:52, height:52, borderRadius:26, backgroundColor:"#0ABAB5", justifyContent:"center", alignItems:"center", borderWidth:2.5, borderColor:"white", overflow:"hidden"}}>
                 {plumberProfile?.avatar_url ? <Image source={{uri: plumberProfile.avatar_url}} style={{width:52, height:52, borderRadius:26}}/> : <Text style={{color:"white", fontWeight:"900", fontSize:20}}>{plumberProfile?.name?.[0] || "J"}</Text>}
               </TouchableOpacity>
-              <View style={{flex:1}}><View style={{flexDirection:"row", alignItems:"center", gap:6}}><Text style={{color:"white", fontWeight:"900", fontSize:16}} numberOfLines={1}>{plumberProfile?.name || "Jim Kaumba"}</Text><View style={{width:7, height:7, borderRadius:4, backgroundColor:"#22c55e"}}/></View><Text style={{color:"#94a3b8", fontSize:10}}>{plumberProfile?.plumber_number} • {plumberProfile?.estate || "Embakasi"}</Text></View>
+              <View style={{flex:1}}><View style={{flexDirection:"row", alignItems:"center", gap:6}}><Text style={{color:"white", fontWeight:"900", fontSize:16}} numberOfLines={1}>{plumberProfile?.name || "Jim Kaumba"}</Text><View style={{width:7, height:7, borderRadius:4, backgroundColor:"#22c55e"}}/></View><Text style={{color:"#94a3b8", fontSize:10}}>{plumberProfile?.plumber_number} • {plumberProfile?.estate || "Embakasi"}</Text><Text style={{color:"#0ABAB5", fontSize:9, marginTop:2}}>{isLive ? "● Live" : "○ Connecting"} • {lastUpdate}</Text></View>
             </View>
             <TouchableOpacity onPress={()=>setShowMenu(true)} style={{backgroundColor:"rgba(255,255,255,0.1)", width:38, height:38, borderRadius:12, justifyContent:"center", alignItems:"center"}}><Ionicons name="menu" size={16} color="white"/></TouchableOpacity>
           </View>
           <View style={{flexDirection:"row", gap:10, marginTop:18}}>
             {[
-              {label:"Active", value: activeJobs.length, icon:"briefcase", color:"#0ABAB5", bg:"rgba(10,171,181,0.15)"},
+              {label:"Active", value: totalActiveCount, icon:"briefcase", color:"#0ABAB5", bg:"rgba(10,171,181,0.15)"},
               {label:"Awaiting Pay", value: awaitingPaymentJobs.length, icon:"cash", color:"#d97706", bg:"rgba(217,119,6,0.15)"},
               {label:"Done Today", value: finalDoneToday, icon:"checkmark-done", color:"#22c55e", bg:"rgba(34,197,94,0.15)"},
             ].map((s,i)=>(
@@ -690,12 +712,12 @@ export default function PlumberApp() {
         </View>
         <View style={{paddingHorizontal:16, paddingTop:16, paddingBottom:8}}>
           <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
-            <View><Text style={{fontWeight:"900", fontSize:18, color:"#0A1931"}}>Your Jobs</Text><Text style={{fontSize:11, color:"#64748b", marginTop:2}}>{activeJobs.length} active • {awaitingPaymentJobs.length} awaiting pay • {completedJobs.length} paid</Text></View>
+            <View><Text style={{fontWeight:"900", fontSize:18, color:"#0A1931"}}>Your Jobs</Text><Text style={{fontSize:11, color:"#64748b", marginTop:2}}>{totalActiveCount} active • {awaitingPaymentJobs.length} awaiting pay • {completedJobs.length} paid</Text></View>
             <TouchableOpacity onPress={()=>fetchJobs()} style={{backgroundColor:"white", width:36, height:36, borderRadius:12, justifyContent:"center", alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="refresh" size={16} color="#0A1931"/></TouchableOpacity>
           </View>
         </View>
         <View style={{padding:16, paddingTop:8, gap:12}}>
-          {activeJobs.map((j:any)=>{
+          {[...activeJobs, ...awaitingPaymentJobs].map((j:any)=>{
             const isAwaiting = j.status==='completed_awaiting_payment';
             const isEnRoute = j.status==='EN_ROUTE';
             const isAssigned = j.status==='ASSIGNED';
@@ -706,18 +728,111 @@ export default function PlumberApp() {
                   <View style={{flexDirection:"row", justifyContent:"space-between"}}><View style={{backgroundColor: isAwaiting ? "#92400e" : "#0A1931", paddingHorizontal:9, paddingVertical:4, borderRadius:8}}><Text style={{color:"white", fontWeight:"900", fontSize:10}}>{j.job_number} {isAwaiting ? "• AWAITING PAY" : ""}</Text></View><Text style={{fontSize:10, color:"#94a3b8"}}>{j.status === 'completed_awaiting_payment' ? toEAT(j.completed_at) : timeAgo(j.created_at)}</Text></View>
                   <Text style={{fontWeight:"900", fontSize:14, color:"#0A1931", marginTop:8}} numberOfLines={1}>{j.category} • {j.building_name}</Text>
                   <View style={{flexDirection:"row", alignItems:"center", gap:4, marginTop:4}}><Ionicons name="location" size={12} color="#0ABAB5"/><Text style={{fontSize:11, color:"#475569"}} numberOfLines={1}>{j.estate}</Text></View>
-                  <View style={{flexDirection:"row", justifyContent:"space-between", marginTop:10, paddingTop:8, borderTopWidth:1, borderTopColor:"#f8fafc"}}><Text style={{fontSize:11, fontWeight:"600", color: isAwaiting ? "#92400e" : "#64748b"}}>{isAwaiting ? "⏳ Waiting customer payment" : "Tap to view & navigate"}</Text><View style={{backgroundColor: isAwaiting ? "#d97706" : "#0A1931", paddingHorizontal:12, paddingVertical:5, borderRadius:20}}><Text style={{color:"white", fontWeight:"900", fontSize:10}}>{isAwaiting ? "VIEW" : "OPEN →"}</Text></View></View>
+                  <View style={{flexDirection:"row", justifyContent:"space-between", marginTop:10, paddingTop:8, borderTopWidth:1, borderTopColor:"#f8fafc"}}><Text style={{fontSize:11, fontWeight:"600", color: isAwaiting ? "#92400e" : "#64748b"}}>{isAwaiting ? "⏳ Waiting customer payment - Payout end of day" : "Tap to view & navigate"}</Text><View style={{backgroundColor: isAwaiting ? "#d97706" : "#0A1931", paddingHorizontal:12, paddingVertical:5, borderRadius:20}}><Text style={{color:"white", fontWeight:"900", fontSize:10}}>{isAwaiting ? "VIEW" : "OPEN →"}</Text></View></View>
                 </View></View>
               </TouchableOpacity>
             )
           })}
-          {activeJobs.length===0 && <View style={{backgroundColor:"white", padding:32, borderRadius:20, alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="briefcase-outline" size={32} color="#94a3b8"/><Text style={{fontWeight:"900", marginTop:12}}>{completedJobs.length>0 ? `${completedJobs.length} paid - No active jobs` : "No jobs yet"}</Text><Text style={{fontSize:11, color:"#64748b", marginTop:4, textAlign:"center"}}>{completedJobs.length>0 ? `${completedJobs.length} jobs completed` : "Waiting for admin to assign"}</Text></View>}
+          {totalActiveCount===0 && <View style={{backgroundColor:"white", padding:32, borderRadius:20, alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="briefcase-outline" size={32} color="#94a3b8"/><Text style={{fontWeight:"900", marginTop:12}}>{completedJobs.length>0 ? `${completedJobs.length} paid - No active jobs` : "No jobs yet"}</Text><Text style={{fontSize:11, color:"#64748b", marginTop:4, textAlign:"center"}}>{completedJobs.length>0 ? `${completedJobs.length} jobs completed` : "Waiting for admin to assign"}</Text></View>}
         </View>
       </ScrollView>
+
       <View style={{position:"absolute", bottom:0, left:0, right:0, backgroundColor:"white", borderTopWidth:1, borderTopColor:"#e2e8f0", flexDirection:"row", paddingHorizontal:16, paddingVertical:10, paddingBottom: Platform.OS==='ios'? 26 : 12, gap:12, elevation:10}}>
         <TouchableOpacity onPress={()=>setShowHelp(true)} style={{flex:1, backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", paddingVertical:14, borderRadius:14, flexDirection:"row", justifyContent:"center", gap:8, alignItems:"center"}}><Ionicons name="help-circle" size={18} color="#0A1931"/><Text style={{fontWeight:"800", fontSize:13, color:"#0A1931"}}>Need Help</Text></TouchableOpacity>
         <TouchableOpacity onPress={()=>setShowSettings(true)} style={{flex:1, backgroundColor:"#0A1931", paddingVertical:14, borderRadius:14, flexDirection:"row", justifyContent:"center", gap:8, alignItems:"center"}}><Ionicons name="settings" size={18} color="white"/><Text style={{color:"white", fontWeight:"800", fontSize:13}}>Settings</Text></TouchableOpacity>
       </View>
+
+      {showMenu && (
+        <View style={{position:"absolute", top:0, left:0, right:0, bottom:0, backgroundColor:"rgba(0,0,0,0.55)", zIndex:9999, justifyContent:"flex-end"}}>
+          <TouchableOpacity style={{flex:1}} activeOpacity={1} onPress={()=>setShowMenu(false)}/>
+          <View style={{backgroundColor:"white", borderTopLeftRadius:28, borderTopRightRadius:28, padding:20, paddingBottom: Platform.OS==='ios'? 40 : 20}}>
+            <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
+              <Text style={{fontSize:20, fontWeight:"900", color:"#0A1931"}}>Menu</Text>
+              <TouchableOpacity onPress={()=>setShowMenu(false)} style={{width:36, height:36, borderRadius:18, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={18}/></TouchableOpacity>
+            </View>
+            <View style={{marginTop:20, gap:12}}>
+              <TouchableOpacity onPress={()=>{ setShowMenu(false); setTimeout(()=>setShowSettings(true),150); }} style={{flexDirection:"row", alignItems:"center", gap:14, padding:16, backgroundColor:"#f8fafc", borderRadius:14, borderWidth:1, borderColor:"#e2e8f0"}}>
+                <View style={{width:40, height:40, borderRadius:12, backgroundColor:"#0A1931", justifyContent:"center", alignItems:"center"}}><Ionicons name="person" size={18} color="white"/></View>
+                <View><Text style={{fontWeight:"800", color:"#0A1931"}}>My Profile</Text><Text style={{fontSize:11, color:"#64748b"}}>{plumberProfile?.name} • {plumberProfile?.plumber_number}</Text></View>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={()=>{ setShowMenu(false); fetchJobs(); }} style={{flexDirection:"row", alignItems:"center", gap:14, padding:16, backgroundColor:"white", borderRadius:14, borderWidth:1, borderColor:"#e2e8f0"}}>
+                <View style={{width:40, height:40, borderRadius:12, backgroundColor:"#0ABAB5", justifyContent:"center", alignItems:"center"}}><Ionicons name="refresh" size={18} color="white"/></View>
+                <Text style={{fontWeight:"700"}}>Refresh Jobs</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={()=>{ setShowMenu(false); setTimeout(()=>setShowHelp(true),150); }} style={{flexDirection:"row", alignItems:"center", gap:14, padding:16, backgroundColor:"white", borderRadius:14, borderWidth:1, borderColor:"#e2e8f0"}}>
+                <View style={{width:40, height:40, borderRadius:12, backgroundColor:"#f59e0b", justifyContent:"center", alignItems:"center"}}><Ionicons name="help-circle" size={18} color="white"/></View>
+                <Text style={{fontWeight:"700"}}>Need Help / Contact Admin</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleLogout} style={{flexDirection:"row", alignItems:"center", gap:14, padding:16, backgroundColor:"#fef2f2", borderRadius:14, borderWidth:1, borderColor:"#fecaca", marginTop:10}}>
+                <View style={{width:40, height:40, borderRadius:12, backgroundColor:"#ef4444", justifyContent:"center", alignItems:"center"}}><Ionicons name="log-out" size={18} color="white"/></View>
+                <Text style={{fontWeight:"900", color:"#ef4444"}}>Logout</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {showHelp && (
+        <View style={{position:"absolute", top:0, left:0, right:0, bottom:0, backgroundColor:"rgba(0,0,0,0.55)", zIndex:10000, justifyContent:"flex-end"}}>
+          <TouchableOpacity style={{flex:1}} activeOpacity={1} onPress={()=>setShowHelp(false)}/>
+          <View style={{backgroundColor:"white", borderTopLeftRadius:28, borderTopRightRadius:28, padding:20, paddingBottom: Platform.OS==='ios'? 40 : 20}}>
+            <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
+              <Text style={{fontSize:20, fontWeight:"900", color:"#0A1931"}}>Need Help?</Text>
+              <TouchableOpacity onPress={()=>setShowHelp(false)} style={{width:36, height:36, borderRadius:18, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={18}/></TouchableOpacity>
+            </View>
+            <Text style={{fontSize:12, color:"#64748b", marginTop:6}}>Describe your issue, admin will contact you.</Text>
+            <TextInput value={helpMsg} onChangeText={setHelpMsg} placeholder="E.g. Customer not picking, location wrong..." multiline numberOfLines={4} style={{marginTop:16, borderWidth:1.5, borderColor:"#e2e8f0", borderRadius:14, padding:14, minHeight:100, textAlignVertical:"top"}}/>
+            <TouchableOpacity onPress={handleHelpSubmit} style={{backgroundColor:"#0A1931", padding:16, borderRadius:14, marginTop:16, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:8}}>
+              <Ionicons name="send" size={16} color="white"/><Text style={{color:"white", fontWeight:"900"}}>Send to Admin</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {showSettings && (
+        <View style={{position:"absolute", top:0, left:0, right:0, bottom:0, backgroundColor:"#f8fafc", zIndex:10001}}>
+          <View style={{backgroundColor:"#0A1931", paddingTop:50, paddingBottom:20, paddingHorizontal:20, flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
+            <Text style={{color:"white", fontSize:20, fontWeight:"900"}}>Settings</Text>
+            <TouchableOpacity onPress={()=>setShowSettings(false)} style={{width:36, height:36, borderRadius:18, backgroundColor:"rgba(255,255,255,0.15)", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={18} color="white"/></TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={{padding:20, gap:16, paddingBottom:40}}>
+            <View style={{backgroundColor:"white", borderRadius:20, padding:20, borderWidth:1, borderColor:"#e2e8f0", alignItems:"center"}}>
+              <TouchableOpacity onPress={pickProfilePhoto} style={{width:90, height:90, borderRadius:45, backgroundColor:"#0ABAB5", justifyContent:"center", alignItems:"center", borderWidth:3, borderColor:"white", overflow:"hidden"}}>
+                {uploadingAvatar ? <ActivityIndicator color="white"/> : plumberProfile?.avatar_url ? <Image source={{uri: plumberProfile.avatar_url}} style={{width:90, height:90, borderRadius:45}}/> : <Text style={{color:"white", fontWeight:"900", fontSize:30}}>{plumberProfile?.name?.[0]}</Text>}
+              </TouchableOpacity>
+              <Text style={{fontWeight:"900", fontSize:18, marginTop:12, color:"#0A1931"}}>{plumberProfile?.name}</Text>
+              <Text style={{fontSize:12, color:"#64748b", marginTop:2}}>{plumberProfile?.plumber_number} • {plumberProfile?.phone}</Text>
+              <TouchableOpacity onPress={pickProfilePhoto} style={{marginTop:12, backgroundColor:"#0A1931", paddingHorizontal:16, paddingVertical:8, borderRadius:20, flexDirection:"row", gap:6, alignItems:"center"}}>
+                <Ionicons name="camera" size={14} color="white"/><Text style={{color:"white", fontWeight:"700", fontSize:12}}>Change Photo</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={{backgroundColor:"white", borderRadius:20, padding:16, borderWidth:1, borderColor:"#e2e8f0"}}>
+              <Text style={{fontWeight:"900", fontSize:14, color:"#0A1931", marginBottom:12}}>Notifications</Text>
+              <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center", paddingVertical:10}}>
+                <View style={{flexDirection:"row", gap:10, alignItems:"center"}}><View style={{width:36, height:36, borderRadius:10, backgroundColor:"#dcfce7", justifyContent:"center", alignItems:"center"}}><Ionicons name="notifications" size={16} color="#16a34a"/></View><Text style={{fontWeight:"600"}}>Push Notifications</Text></View>
+                <Switch value={notifEnabled} onValueChange={setNotifEnabled} trackColor={{false:"#e2e8f0", true:"#0A1931"}} thumbColor="white"/>
+              </View>
+              <View style={{height:1, backgroundColor:"#f1f5f9", marginVertical:4}}/>
+              <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center", paddingVertical:10}}>
+                <View style={{flexDirection:"row", gap:10, alignItems:"center"}}><View style={{width:36, height:36, borderRadius:10, backgroundColor:"#ffedd5", justifyContent:"center", alignItems:"center"}}><Ionicons name="phone-portrait" size={16} color="#f59e0b"/></View><Text style={{fontWeight:"600"}}>Vibration</Text></View>
+                <Switch value={vibrateEnabled} onValueChange={setVibrateEnabled} trackColor={{false:"#e2e8f0", true:"#0A1931"}} thumbColor="white"/>
+              </View>
+            </View>
+
+            <View style={{backgroundColor:"white", borderRadius:20, padding:16, borderWidth:1, borderColor:"#e2e8f0"}}>
+              <Text style={{fontWeight:"900", fontSize:14, color:"#0A1931", marginBottom:8}}>App Info</Text>
+              <View style={{flexDirection:"row", justifyContent:"space-between", paddingVertical:8}}><Text style={{color:"#64748b", fontSize:13}}>Version</Text><Text style={{fontWeight:"700", fontSize:13}}>RapidFundi 1.0.0</Text></View>
+              <View style={{flexDirection:"row", justifyContent:"space-between", paddingVertical:8}}><Text style={{color:"#64748b", fontSize:13}}>Live</Text><Text style={{fontWeight:"700", fontSize:13}}>{isLive ? "● Connected" : "○ Connecting"} • {lastUpdate}</Text></View>
+              <View style={{flexDirection:"row", justifyContent:"space-between", paddingVertical:8}}><Text style={{color:"#64748b", fontSize:13}}>GPS</Text><Text style={{fontWeight:"700", fontSize:11}}>{gps ? `${Number(gps.latitude).toFixed(4)}, ${Number(gps.longitude).toFixed(4)}` : "No GPS"}</Text></View>
+            </View>
+
+            <TouchableOpacity onPress={handleLogout} style={{backgroundColor:"#ef4444", padding:18, borderRadius:14, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:8, marginTop:10}}>
+              <Ionicons name="log-out" size={18} color="white"/><Text style={{color:"white", fontWeight:"900"}}>Logout</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      )}
     </View>
   )
 }

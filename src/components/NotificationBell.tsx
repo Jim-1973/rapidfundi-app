@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { View, Text, TouchableOpacity, ScrollView, Modal } from "react-native";
 import { supabase } from "../../lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
@@ -7,32 +7,93 @@ export default function NotificationBell({ userId, role }: { userId?: string, ro
   const [notifications, setNotifications] = useState<any[]>([]);
   const [show, setShow] = useState(false);
   const [unread, setUnread] = useState(0);
+  const channelRef = useRef<any>(null);
 
   const fetchNotifs = async () => {
-    let data: any[] | null = null;
-    if(role === 'admin'){
-      const res = await supabase.from('notifications').select('*').eq('role','admin').order('created_at',{ascending:false}).limit(30);
-      data = res.data;
-    } else if(userId){
-      const res = await supabase.from('notifications').select('*').eq('user_id', userId).order('created_at',{ascending:false}).limit(30);
-      data = res.data;
-    }
-    setNotifications(data||[]);
-    setUnread(data?.filter((n:any)=>!n.is_read).length || 0);
+    if(!userId && role !== 'admin') return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if(!session) return;
+      if(role !== 'admin' && session.user.id !== userId) return;
+
+      let q = supabase.from('notifications').select('*').order('created_at',{ascending:false}).limit(30);
+      if(role === 'admin'){
+        q = q.eq('role','admin');
+      } else {
+        q = q.eq('user_id', userId!);
+      }
+      const { data } = await q;
+      setNotifications(data||[]);
+      setUnread(data?.filter((n:any)=>!n.is_read).length || 0);
+    } catch {}
   };
 
   useEffect(()=>{
-    fetchNotifs();
-    const channel = supabase.channel(`notifs-${userId||role}-${Date.now()}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, () => fetchNotifs())
-      .subscribe();
-    return () => { supabase.removeChannel(channel); }
+    if(!userId && role !== 'admin') return;
+    
+    let isMounted = true;
+    let currentChannel: any = null;
+
+    const setup = async () => {
+      await fetchNotifs();
+      
+      if(!isMounted) return;
+
+      // CLEAN OLD CHANNELS FIRST
+      if(channelRef.current){
+        try { await supabase.removeChannel(channelRef.current); } catch {}
+        channelRef.current = null;
+      }
+
+      const filter = role === 'admin' ? `role=eq.admin` : `user_id=eq.${userId}`;
+      // FIX: Make channel name UNIQUE every time - prevents "cannot add callbacks after subscribe"
+      const uniqueId = `${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+      const channelName = `notifs-${role || 'user'}-${userId || 'admin'}-${uniqueId}`;
+      
+      const channel = supabase
+        .channel(channelName)
+        .on('postgres_changes', { 
+          event: 'INSERT', 
+          schema: 'public', 
+          table: 'notifications',
+          filter
+        }, (payload) => {
+          const n = payload.new as any;
+          if(role === 'admin' && n.role === 'admin') fetchNotifs();
+          else if(n.user_id === userId) fetchNotifs();
+        })
+        .subscribe(); // subscribe AFTER on
+      
+      channelRef.current = channel;
+      currentChannel = channel;
+    };
+
+    setup();
+      
+    return () => { 
+      isMounted = false;
+      if(currentChannel){
+        try { supabase.removeChannel(currentChannel); } catch {}
+      }
+      if(channelRef.current){
+        try { supabase.removeChannel(channelRef.current); } catch {}
+        channelRef.current = null;
+      }
+    }
   }, [userId, role]);
 
   const markRead = async () => {
-    if(role==='admin') await supabase.from('notifications').update({ is_read: true }).eq('role','admin').eq('is_read', false);
-    else if(userId) await supabase.from('notifications').update({ is_read: true }).eq('user_id', userId).eq('is_read', false);
-    setUnread(0);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if(!session) return;
+      if(role==='admin'){
+        await supabase.from('notifications').update({ is_read: true }).eq('role','admin').eq('is_read', false);
+      } else {
+        await supabase.from('notifications').update({ is_read: true }).eq('user_id', session.user.id).eq('is_read', false);
+      }
+      setUnread(0);
+      setNotifications(prev => prev.map(n => ({...n, is_read: true})));
+    } catch {}
   };
 
   return (
