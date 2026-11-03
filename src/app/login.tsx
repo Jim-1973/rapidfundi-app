@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, ActivityIndicator } from "react-native";
+import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, Image, ScrollView } from "react-native";
 import { supabase } from "../../lib/supabase";
-import { useRouter } from "expo-router";
-import { Link } from "expo-router";
+import { useRouter, Link } from "expo-router";
 
 export default function Login(){
   const router = useRouter();
@@ -67,7 +66,6 @@ export default function Login(){
         return;
       }
 
-      // Only plumber vs customer - admin is hidden and NOT accessible here
       if(plumber){
         router.replace("/plumber" as any);
       } else {
@@ -82,7 +80,51 @@ export default function Login(){
   };
 
   return (
-    <View style={{flex:1, backgroundColor:"white", padding:24, justifyContent:"center"}}>
+    <ScrollView style={{flex:1, backgroundColor:"white"}} contentContainerStyle={{flexGrow:1, padding:24, justifyContent:"center"}}>
+      {/* LOGO - PROFESSIONAL HEADER WITH BY LANTEI */}
+      <View style={{alignItems:'center', marginBottom:32}}>
+        <Image 
+          source={require('../../assets/images/logo.png')} 
+          style={{width:140, height:140, resizeMode:'contain'}} 
+        />
+        
+        {/* SMART PROFESSIONAL BY LANTEI - REPLACES SECOND RAPIDFUNDI */}
+        <View style={{alignItems:'center', marginTop:12}}>
+          <View style={{flexDirection:'row', alignItems:'center', gap:12}}>
+            <View style={{width:28, height:1.5, backgroundColor:'#cbd5e1'}} />
+            <View style={{flexDirection:'row', alignItems:'baseline', gap:6}}>
+              <Text style={{
+                fontSize:11,
+                fontWeight:'600',
+                letterSpacing:4,
+                color:'#94a3b8'
+              }}>
+                BY
+              </Text>
+              <Text style={{
+                fontSize:14,
+                fontWeight:'900',
+                letterSpacing:4,
+                color:'#0A1931'
+              }}>
+                LANTEI
+              </Text>
+            </View>
+            <View style={{width:28, height:1.5, backgroundColor:'#cbd5e1'}} />
+          </View>
+          
+          <Text style={{
+            color:'#64748b', 
+            fontSize:12, 
+            marginTop:8,
+            fontWeight:'500',
+            letterSpacing:0.5
+          }}>
+            Fast. Reliable. Plumbing Experts.
+          </Text>
+        </View>
+      </View>
+
       <Text style={{fontSize:28, fontWeight:"900", color:"#0A1931"}}>Welcome Back</Text>
       <Text style={{color:"#64748b", marginTop:6}}>Login to RapidFundi</Text>
 
@@ -128,6 +170,6 @@ export default function Login(){
           <Text style={{color:"#0A1931", fontWeight:"700", fontSize:13}}>Forgot Password?</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </ScrollView>
   );
 }

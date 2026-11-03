@@ -1,6 +1,6 @@
 import { Stack } from "expo-router";
 import { useEffect, useState } from "react";
-import { View, ActivityIndicator } from "react-native";
+import { View, ActivityIndicator, Image, Text } from "react-native";
 import { supabase } from "../../lib/supabase";
 import * as SecureStore from 'expo-secure-store';
 
@@ -37,7 +37,7 @@ export default function RootLayout() {
 
   return (
     <View style={{ flex: 1 }}>
-      <Stack screenOptions={{ headerShown: false }} initialRouteName="login">
+      <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="login" />
         <Stack.Screen name="signup" />
         <Stack.Screen name="forgot-password" />
@@ -49,6 +49,8 @@ export default function RootLayout() {
 
       {!ready && (
         <View style={{ position:"absolute", top:0, left:0, right:0, bottom:0, justifyContent:"center", alignItems:"center", backgroundColor:"white" }}>
+          <Image source={require('../../assets/images/logo.png')} style={{width:120, height:120, resizeMode:'contain', marginBottom:16}} />
+          <Text style={{fontWeight:'900', fontSize:18, color:'#0A1931', marginBottom:12}}>Rapid<Text style={{color:'#FF6B00'}}>Fundi</Text></Text>
           <ActivityIndicator color="#0ABAB5" />
         </View>
       )}

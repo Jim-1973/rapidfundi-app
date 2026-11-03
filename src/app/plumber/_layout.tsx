@@ -1,11 +1,20 @@
 import { Tabs } from "expo-router";
-import { Text, View, TouchableOpacity, ActivityIndicator } from "react-native";
+import { Text, View, TouchableOpacity, ActivityIndicator, Image } from "react-native";
 import { useEffect, useState } from "react";
 import { useRouter } from "expo-router";
 import { supabase } from "../../../lib/supabase";
 import { Ionicons } from "@expo/vector-icons";
 import NotificationBell from "../../components/NotificationBell";
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+function LogoHeader({ title }: { title?: string }){
+  return (
+    <View style={{flexDirection:'row', alignItems:'center', gap:8}}>
+      <Image source={require('../../../assets/images/logo.png')} style={{width:28, height:28, resizeMode:'contain'}} />
+      <Text style={{fontWeight:'900', fontSize:16, color:'#0A1931'}}>{title || 'RapidFundi'}</Text>
+    </View>
+  );
+}
 
 export default function PlumberLayout() {
   const router = useRouter();
@@ -59,7 +68,6 @@ export default function PlumberLayout() {
     }
   };
 
-  // The navigator is always mounted. The spinner is an overlay, not a replacement.
   return (
     <View style={{ flex: 1 }}>
       <Tabs
@@ -95,7 +103,7 @@ export default function PlumberLayout() {
           name="index"
           options={{
             title: "Jobs",
-            headerTitle: "Plumber Jobs",
+            headerTitle: () => <LogoHeader title="Plumber Jobs" />,
             tabBarIcon: ({ color }: any) => <Ionicons name="construct" size={22} color={color} />,
           }}
         />
@@ -103,6 +111,7 @@ export default function PlumberLayout() {
           name="receipts"
           options={{
             title: "Receipts",
+            headerTitle: () => <LogoHeader title="Receipts" />,
             tabBarIcon: ({ color }: any) => <Ionicons name="receipt" size={22} color={color} />,
           }}
         />
@@ -125,6 +134,7 @@ export default function PlumberLayout() {
             backgroundColor: "white",
           }}
         >
+          <Image source={require('../../../assets/images/logo.png')} style={{width:80, height:80, resizeMode:'contain', marginBottom:12}} />
           <ActivityIndicator color="#0ABAB5" />
         </View>
       )}

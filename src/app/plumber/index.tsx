@@ -79,6 +79,13 @@ export default function PlumberApp() {
   const [completedSummary, setCompletedSummary] = useState<any>(null);
   const [completedMedia, setCompletedMedia] = useState<any[]>([]);
   const notifiedJobsRef = useRef<Set<string>>(new Set());
+  
+  // === JOB HISTORY NEW ===
+  const [activeTab, setActiveTab] = useState<'active'|'history'>('active');
+  const [historyFilter, setHistoryFilter] = useState<'ALL'|'PAID'|'COMPLETED'|'AWAITING'>('ALL');
+  const [receipts, setReceipts] = useState<any[]>([]);
+  const [showReceiptModal, setShowReceiptModal] = useState(false);
+  const [selectedReceipt, setSelectedReceipt] = useState<any>(null);
 
   const safeNotify = async (title: string, body: string, identifier: string) => {
     if (Platform.OS === 'web' || !notifEnabled || !Notifications) return;
@@ -179,6 +186,7 @@ export default function PlumberApp() {
         setPlumberProfile(pl); 
         setAuthChecked(true); 
         fetchJobs(pl.id);
+        fetchReceipts(pl.id);
         const { status } = await Location.requestForegroundPermissionsAsync();
         if(status==='granted'){ const loc = await Location.getCurrentPositionAsync({}); setGps(loc.coords); }
       }catch(e){
@@ -203,6 +211,19 @@ export default function PlumberApp() {
       }
       setJobs(data); setLastUpdate(new Date().toLocaleTimeString());
     }
+  };
+
+  const fetchReceipts = async (plumberId?: string) => {
+    const id = plumberId || plumberProfile?.id;
+    if(!id) return;
+    try{
+      const { data } = await supabase.from('receipts').select('*').eq('plumber_id', id).order('created_at',{ascending:false}).limit(50);
+      if(data) setReceipts(data);
+      else {
+        const { data: data2 } = await supabase.from('job_receipts').select('*').eq('plumber_id', id).order('created_at',{ascending:false}).limit(50);
+        if(data2) setReceipts(data2);
+      }
+    }catch(e){ console.log("receipt fetch", e); }
   };
 
   useEffect(()=>{
@@ -394,8 +415,6 @@ export default function PlumberApp() {
         if(err2) throw err2;
       }
       await logPlumberAction(selected.id, 'ARRIVED', 'completed_awaiting_payment', {media_url: urlData.publicUrl});
-
-      // === RECEIPTS: Customer PAID, Plumber UNPAID (end of day) ===
       try{
         const jobForReceipt = {
           id: selected.id,
@@ -409,7 +428,6 @@ export default function PlumberApp() {
         };
         await createFinalReceipts(jobForReceipt, plumberProfile);
       }catch(receiptErr){ console.log("Receipt create failed", receiptErr); }
-
       if(selected.customer_id) { await notifyCustomer(selected.customer_id, "✅ Work Done - Pay Now", `${plumberProfile.name} completed ${selected.job_number}. Final photo uploaded. Please pay KES ${selected.total_amount} to complete. Completed at ${toEAT(nowIso)} EAT`, "payment_required", selected.id); }
       await notifyAdmin("💰 Awaiting Payment", `${plumberProfile.name} completed ${selected.job_number}. Awaiting customer payment KES ${selected.total_amount}.`, "PAYMENT_AWAITING", selected.id);
       const { data: allMedia } = await supabase.from('job_media').select('*').eq('job_id', selected.id).order('created_at',{ascending:true});
@@ -419,6 +437,7 @@ export default function PlumberApp() {
       setCompletedSummary({...selected, status: 'completed_awaiting_payment', final_photo_url: urlData.publicUrl, completed_at: nowIso});
       setSelected(null);
       fetchJobs();
+      fetchReceipts();
       Alert.alert("✅ Work Done!", `Final photo uploaded. Job is now Awaiting Payment. Payout will be processed end of day. Time: ${toEAT(nowIso)} EAT`);
     }catch(e:any){ Alert.alert("Failed", e.message); console.log(e) } finally{ setLoading(false) }
   };
@@ -667,7 +686,7 @@ export default function PlumberApp() {
   
   const activeJobs = jobs.filter((j:any)=>['ASSIGNED','EN_ROUTE','ARRIVED'].includes(j.status));
   const awaitingPaymentJobs = jobs.filter((j:any)=>j.status==='completed_awaiting_payment');
-  const completedJobs = jobs.filter((j:any)=>['COMPLETED','paid'].includes(j.status));
+  const completedJobs = jobs.filter((j:any)=>['COMPLETED','paid','PAID'].includes(j.status) || j.payment_status==='PAID');
   
   let doneTodayJobs = completedJobs.filter((j:any)=> isToday(j.completed_at || j.paid_at || j.updated_at || j.created_at));
   if(doneTodayJobs.length === 0 && completedJobs.length > 0){
@@ -676,6 +695,18 @@ export default function PlumberApp() {
   }
   const finalDoneToday = doneTodayJobs.length;
   const totalActiveCount = activeJobs.length + awaitingPaymentJobs.length;
+
+  // === HISTORY FILTERED ===
+  const historyJobs = (() => {
+    if(historyFilter==='ALL') return [...awaitingPaymentJobs, ...completedJobs].sort((a:any,b:any)=> new Date(b.completed_at||b.updated_at||b.created_at).getTime() - new Date(a.completed_at||a.updated_at||a.created_at).getTime());
+    if(historyFilter==='PAID') return completedJobs.filter((j:any)=> j.payment_status==='PAID' || j.status==='paid' || j.status==='PAID');
+    if(historyFilter==='COMPLETED') return completedJobs.filter((j:any)=> j.status==='COMPLETED');
+    if(historyFilter==='AWAITING') return awaitingPaymentJobs;
+    return completedJobs;
+  })();
+
+  const totalEarnings = completedJobs.reduce((sum:any, j:any)=> sum + Number(j.total_amount || j.labour_cost || 0), 0);
+  const awaitingTotal = awaitingPaymentJobs.reduce((sum:any, j:any)=> sum + Number(j.total_amount || j.labour_cost || 0), 0);
 
   return (
     <View style={{flex:1, backgroundColor:"#f8fafc"}}>
@@ -710,32 +741,118 @@ export default function PlumberApp() {
             ))}
           </View>
         </View>
+
+        {/* TAB SWITCHER */}
+        <View style={{flexDirection:"row", marginHorizontal:16, marginTop:16, backgroundColor:"white", borderRadius:14, padding:4, borderWidth:1, borderColor:"#e2e8f0"}}>
+          <TouchableOpacity onPress={()=>setActiveTab('active')} style={{flex:1, backgroundColor: activeTab==='active' ? "#0A1931" : "transparent", paddingVertical:10, borderRadius:10, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:6}}>
+            <Ionicons name="briefcase" size={14} color={activeTab==='active' ? "white" : "#64748b"}/><Text style={{fontWeight:"900", fontSize:12, color: activeTab==='active' ? "white" : "#64748b"}}>Active ({totalActiveCount})</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={()=>setActiveTab('history')} style={{flex:1, backgroundColor: activeTab==='history' ? "#0A1931" : "transparent", paddingVertical:10, borderRadius:10, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:6}}>
+            <Ionicons name="time" size={14} color={activeTab==='history' ? "white" : "#64748b"}/><Text style={{fontWeight:"900", fontSize:12, color: activeTab==='history' ? "white" : "#64748b"}}>History ({completedJobs.length + awaitingPaymentJobs.length})</Text>
+          </TouchableOpacity>
+        </View>
+
+        {activeTab==='active' ? (
+        <>
         <View style={{paddingHorizontal:16, paddingTop:16, paddingBottom:8}}>
           <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
             <View><Text style={{fontWeight:"900", fontSize:18, color:"#0A1931"}}>Your Jobs</Text><Text style={{fontSize:11, color:"#64748b", marginTop:2}}>{totalActiveCount} active • {awaitingPaymentJobs.length} awaiting pay • {completedJobs.length} paid</Text></View>
-            <TouchableOpacity onPress={()=>fetchJobs()} style={{backgroundColor:"white", width:36, height:36, borderRadius:12, justifyContent:"center", alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="refresh" size={16} color="#0A1931"/></TouchableOpacity>
+            <TouchableOpacity onPress={()=>{fetchJobs(); fetchReceipts();}} style={{backgroundColor:"white", width:36, height:36, borderRadius:12, justifyContent:"center", alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="refresh" size={16} color="#0A1931"/></TouchableOpacity>
           </View>
         </View>
         <View style={{padding:16, paddingTop:8, gap:12}}>
-          {[...activeJobs, ...awaitingPaymentJobs].map((j:any)=>{
-            const isAwaiting = j.status==='completed_awaiting_payment';
+          {[...activeJobs].map((j:any)=>{
+            const isAwaiting = false;
             const isEnRoute = j.status==='EN_ROUTE';
             const isAssigned = j.status==='ASSIGNED';
-            const accent = isAwaiting ? "#d97706" : isEnRoute ? "#f59e0b" : isAssigned ? "#22c55e" : "#0ABAB5";
+            const accent = isEnRoute ? "#f59e0b" : isAssigned ? "#22c55e" : "#0ABAB5";
             return (
-              <TouchableOpacity key={j.id} onPress={()=>{ setSelected(j); fetchMedia(j.id); }} activeOpacity={0.88} style={{backgroundColor:"white", borderRadius:20, borderWidth:1, borderColor: isAwaiting ? "#fde68a" : isEnRoute ? "#fde68a" : "#e2e8f0", overflow:"hidden"}}>
+              <TouchableOpacity key={j.id} onPress={()=>{ setSelected(j); fetchMedia(j.id); }} activeOpacity={0.88} style={{backgroundColor:"white", borderRadius:20, borderWidth:1, borderColor: isEnRoute ? "#fde68a" : "#e2e8f0", overflow:"hidden"}}>
                 <View style={{flexDirection:"row"}}><View style={{width:6, backgroundColor: accent}}/><View style={{flex:1, padding:14}}>
-                  <View style={{flexDirection:"row", justifyContent:"space-between"}}><View style={{backgroundColor: isAwaiting ? "#92400e" : "#0A1931", paddingHorizontal:9, paddingVertical:4, borderRadius:8}}><Text style={{color:"white", fontWeight:"900", fontSize:10}}>{j.job_number} {isAwaiting ? "• AWAITING PAY" : ""}</Text></View><Text style={{fontSize:10, color:"#94a3b8"}}>{j.status === 'completed_awaiting_payment' ? toEAT(j.completed_at) : timeAgo(j.created_at)}</Text></View>
+                  <View style={{flexDirection:"row", justifyContent:"space-between"}}><View style={{backgroundColor: "#0A1931", paddingHorizontal:9, paddingVertical:4, borderRadius:8}}><Text style={{color:"white", fontWeight:"900", fontSize:10}}>{j.job_number}</Text></View><Text style={{fontSize:10, color:"#94a3b8"}}>{timeAgo(j.created_at)}</Text></View>
                   <Text style={{fontWeight:"900", fontSize:14, color:"#0A1931", marginTop:8}} numberOfLines={1}>{j.category} • {j.building_name}</Text>
                   <View style={{flexDirection:"row", alignItems:"center", gap:4, marginTop:4}}><Ionicons name="location" size={12} color="#0ABAB5"/><Text style={{fontSize:11, color:"#475569"}} numberOfLines={1}>{j.estate}</Text></View>
-                  <View style={{flexDirection:"row", justifyContent:"space-between", marginTop:10, paddingTop:8, borderTopWidth:1, borderTopColor:"#f8fafc"}}><Text style={{fontSize:11, fontWeight:"600", color: isAwaiting ? "#92400e" : "#64748b"}}>{isAwaiting ? "⏳ Waiting customer payment - Payout end of day" : "Tap to view & navigate"}</Text><View style={{backgroundColor: isAwaiting ? "#d97706" : "#0A1931", paddingHorizontal:12, paddingVertical:5, borderRadius:20}}><Text style={{color:"white", fontWeight:"900", fontSize:10}}>{isAwaiting ? "VIEW" : "OPEN →"}</Text></View></View>
+                  <View style={{flexDirection:"row", justifyContent:"space-between", marginTop:10, paddingTop:8, borderTopWidth:1, borderTopColor:"#f8fafc"}}><Text style={{fontSize:11, fontWeight:"600", color:"#64748b"}}>Tap to view & navigate</Text><View style={{backgroundColor:"#0A1931", paddingHorizontal:12, paddingVertical:5, borderRadius:20}}><Text style={{color:"white", fontWeight:"900", fontSize:10}}>OPEN →</Text></View></View>
                 </View></View>
               </TouchableOpacity>
             )
           })}
-          {totalActiveCount===0 && <View style={{backgroundColor:"white", padding:32, borderRadius:20, alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="briefcase-outline" size={32} color="#94a3b8"/><Text style={{fontWeight:"900", marginTop:12}}>{completedJobs.length>0 ? `${completedJobs.length} paid - No active jobs` : "No jobs yet"}</Text><Text style={{fontSize:11, color:"#64748b", marginTop:4, textAlign:"center"}}>{completedJobs.length>0 ? `${completedJobs.length} jobs completed` : "Waiting for admin to assign"}</Text></View>}
+          {activeJobs.length===0 && <View style={{backgroundColor:"white", padding:32, borderRadius:20, alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="briefcase-outline" size={32} color="#94a3b8"/><Text style={{fontWeight:"900", marginTop:12}}>No active jobs</Text><Text style={{fontSize:11, color:"#64748b", marginTop:4, textAlign:"center"}}>Tap History to see past jobs</Text></View>}
         </View>
+        </>
+        ) : (
+        <>
+        {/* HISTORY VIEW */}
+        <View style={{paddingHorizontal:16, paddingTop:16}}>
+          <View style={{backgroundColor:"white", borderRadius:16, padding:14, borderWidth:1, borderColor:"#e2e8f0", flexDirection:"row", gap:10}}>
+            <View style={{flex:1}}><Text style={{fontSize:10, fontWeight:"800", color:"#94a3b8"}}>TOTAL EARNED (PAID)</Text><Text style={{fontSize:16, fontWeight:"900", color:"#166534", marginTop:2}}>KES {totalEarnings.toLocaleString()}</Text></View>
+            <View style={{width:1, backgroundColor:"#e2e8f0"}}/>
+            <View style={{flex:1}}><Text style={{fontSize:10, fontWeight:"800", color:"#94a3b8"}}>AWAITING PAYOUT</Text><Text style={{fontSize:16, fontWeight:"900", color:"#92400e", marginTop:2}}>KES {awaitingTotal.toLocaleString()}</Text></View>
+          </View>
+          <View style={{flexDirection:"row", gap:8, marginTop:12}}>
+            {(['ALL','PAID','AWAITING','COMPLETED'] as const).map(f=>(
+              <TouchableOpacity key={f} onPress={()=>setHistoryFilter(f)} style={{paddingHorizontal:12, paddingVertical:8, borderRadius:20, backgroundColor: historyFilter===f ? "#0A1931" : "white", borderWidth:1, borderColor: historyFilter===f ? "#0A1931" : "#e2e8f0"}}>
+                <Text style={{fontSize:11, fontWeight:"800", color: historyFilter===f ? "white" : "#64748b"}}>{f}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+        <View style={{padding:16, gap:12}}>
+          {historyJobs.map((j:any)=>{
+            const isPaid = j.payment_status==='PAID' || j.status==='paid' || j.status==='PAID';
+            const isAwaiting = j.status==='completed_awaiting_payment';
+            return (
+              <View key={j.id} style={{backgroundColor:"white", borderRadius:20, borderWidth:1, borderColor: isPaid ? "#bbf7d0" : isAwaiting ? "#fde68a" : "#e2e8f0", overflow:"hidden"}}>
+                <View style={{flexDirection:"row"}}><View style={{width:6, backgroundColor: isPaid ? "#22c55e" : isAwaiting ? "#d97706" : "#94a3b8"}}/><View style={{flex:1, padding:14}}>
+                  <View style={{flexDirection:"row", justifyContent:"space-between"}}>
+                    <View style={{flexDirection:"row", gap:6}}><View style={{backgroundColor:"#0A1931", paddingHorizontal:8, paddingVertical:3, borderRadius:6}}><Text style={{color:"white", fontSize:9, fontWeight:"900"}}>{j.job_number}</Text></View>
+                    <View style={{backgroundColor: isPaid ? "#dcfce7" : isAwaiting ? "#fef3c7" : "#f1f5f9", paddingHorizontal:8, paddingVertical:3, borderRadius:6}}><Text style={{fontSize:9, fontWeight:"900", color: isPaid ? "#166534" : isAwaiting ? "#92400e" : "#64748b"}}>{isPaid ? "PAID" : isAwaiting ? "AWAITING PAY" : j.status}</Text></View></View>
+                    <Text style={{fontSize:10, color:"#94a3b8"}}>{toEAT(j.completed_at || j.paid_at || j.updated_at)}</Text>
+                  </View>
+                  <Text style={{fontWeight:"900", fontSize:13, marginTop:8, color:"#0A1931"}} numberOfLines={1}>{j.category} • {j.building_name}</Text>
+                  <Text style={{fontSize:11, color:"#475569", marginTop:2}} numberOfLines={1}>{j.estate} {j.labour_cost ? `• KES ${Number(j.total_amount||j.labour_cost).toLocaleString()}` : ""}</Text>
+                  <View style={{flexDirection:"row", gap:8, marginTop:10}}>
+                    <TouchableOpacity onPress={()=>{ setSelected(j); fetchMedia(j.id); }} style={{flex:1, backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", paddingVertical:8, borderRadius:10, alignItems:"center"}}><Text style={{fontSize:11, fontWeight:"800"}}>View Job</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={()=>{ const r = receipts.find((rc:any)=> rc.job_id===j.id); if(r){ setSelectedReceipt(r); setShowReceiptModal(true); } else { Alert.alert("Receipt", `Job ${j.job_number}\nAmount: KES ${j.total_amount||j.labour_cost}\nStatus: ${j.payment_status||j.status}\nCompleted: ${toEAT(j.completed_at)}`); } }} style={{flex:1, backgroundColor: isPaid ? "#0A1931" : "#fff", borderWidth:1, borderColor: isPaid ? "#0A1931" : "#e2e8f0", paddingVertical:8, borderRadius:10, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:4}}><Ionicons name="receipt" size={12} color={isPaid ? "white" : "#0A1931"}/><Text style={{fontSize:11, fontWeight:"800", color: isPaid ? "white" : "#0A1931"}}>Receipt</Text></TouchableOpacity>
+                  </View>
+                </View></View>
+              </View>
+            )
+          })}
+          {historyJobs.length===0 && <View style={{backgroundColor:"white", padding:32, borderRadius:20, alignItems:"center", borderWidth:1, borderColor:"#e2e8f0"}}><Ionicons name="time-outline" size={32} color="#94a3b8"/><Text style={{fontWeight:"900", marginTop:12}}>No {historyFilter} jobs</Text><Text style={{fontSize:11, color:"#64748b", marginTop:4}}>Completed jobs will appear here</Text></View>}
+        </View>
+        </>
+        )}
       </ScrollView>
+
+      {/* RECEIPT MODAL */}
+      <Modal visible={showReceiptModal} transparent animationType="slide">
+        <View style={{flex:1, backgroundColor:"rgba(0,0,0,0.5)", justifyContent:"flex-end"}}>
+          <TouchableOpacity style={{flex:1}} onPress={()=>setShowReceiptModal(false)}/>
+          <View style={{backgroundColor:"white", borderTopLeftRadius:24, borderTopRightRadius:24, padding:20, maxHeight:"85%"}}>
+            <View style={{flexDirection:"row", justifyContent:"space-between", alignItems:"center"}}>
+              <Text style={{fontSize:18, fontWeight:"900"}}>Receipt</Text>
+              <TouchableOpacity onPress={()=>setShowReceiptModal(false)} style={{width:32, height:32, borderRadius:16, backgroundColor:"#f1f5f9", justifyContent:"center", alignItems:"center"}}><Ionicons name="close" size={16}/></TouchableOpacity>
+            </View>
+            {selectedReceipt ? (
+              <ScrollView style={{marginTop:16}}>
+                <View style={{backgroundColor:"#f8fafc", borderRadius:16, padding:16, borderWidth:1, borderColor:"#e2e8f0"}}>
+                  <Text style={{fontWeight:"900", fontSize:16}}>{selectedReceipt.job_number || selectedReceipt.job_id}</Text>
+                  <Text style={{fontSize:12, color:"#64748b", marginTop:4}}>{toEAT(selectedReceipt.created_at)}</Text>
+                  <View style={{marginTop:12, gap:6}}>
+                    <View style={{flexDirection:"row", justifyContent:"space-between"}}><Text style={{color:"#64748b", fontSize:12}}>Labour</Text><Text style={{fontWeight:"700", fontSize:12}}>KES {Number(selectedReceipt.labour_cost||0).toLocaleString()}</Text></View>
+                    <View style={{flexDirection:"row", justifyContent:"space-between"}}><Text style={{color:"#64748b", fontSize:12}}>Materials</Text><Text style={{fontWeight:"700", fontSize:12}}>KES {Number(selectedReceipt.materials_cost||0).toLocaleString()}</Text></View>
+                    <View style={{height:1, backgroundColor:"#e2e8f0", marginVertical:6}}/>
+                    <View style={{flexDirection:"row", justifyContent:"space-between"}}><Text style={{fontWeight:"900", fontSize:13}}>Total</Text><Text style={{fontWeight:"900", fontSize:13}}>KES {Number(selectedReceipt.total_amount||selectedReceipt.amount||0).toLocaleString()}</Text></View>
+                    <View style={{flexDirection:"row", justifyContent:"space-between", marginTop:6}}><Text style={{fontSize:11, color:"#94a3b8"}}>Customer Status</Text><Text style={{fontSize:11, fontWeight:"800", color:"#166534"}}>{selectedReceipt.customer_payment_status || "PAID"}</Text></View>
+                    <View style={{flexDirection:"row", justifyContent:"space-between"}}><Text style={{fontSize:11, color:"#94a3b8"}}>Your Payout</Text><Text style={{fontSize:11, fontWeight:"800", color:"#92400e"}}>{selectedReceipt.plumber_payment_status || "UNPAID - End of day"}</Text></View>
+                  </View>
+                </View>
+              </ScrollView>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
 
       <View style={{position:"absolute", bottom:0, left:0, right:0, backgroundColor:"white", borderTopWidth:1, borderTopColor:"#e2e8f0", flexDirection:"row", paddingHorizontal:16, paddingVertical:10, paddingBottom: Platform.OS==='ios'? 26 : 12, gap:12, elevation:10}}>
         <TouchableOpacity onPress={()=>setShowHelp(true)} style={{flex:1, backgroundColor:"#f8fafc", borderWidth:1, borderColor:"#e2e8f0", paddingVertical:14, borderRadius:14, flexDirection:"row", justifyContent:"center", gap:8, alignItems:"center"}}><Ionicons name="help-circle" size={18} color="#0A1931"/><Text style={{fontWeight:"800", fontSize:13, color:"#0A1931"}}>Need Help</Text></TouchableOpacity>
@@ -755,7 +872,11 @@ export default function PlumberApp() {
                 <View style={{width:40, height:40, borderRadius:12, backgroundColor:"#0A1931", justifyContent:"center", alignItems:"center"}}><Ionicons name="person" size={18} color="white"/></View>
                 <View><Text style={{fontWeight:"800", color:"#0A1931"}}>My Profile</Text><Text style={{fontSize:11, color:"#64748b"}}>{plumberProfile?.name} • {plumberProfile?.plumber_number}</Text></View>
               </TouchableOpacity>
-              <TouchableOpacity onPress={()=>{ setShowMenu(false); fetchJobs(); }} style={{flexDirection:"row", alignItems:"center", gap:14, padding:16, backgroundColor:"white", borderRadius:14, borderWidth:1, borderColor:"#e2e8f0"}}>
+              <TouchableOpacity onPress={()=>{ setShowMenu(false); setActiveTab('history'); }} style={{flexDirection:"row", alignItems:"center", gap:14, padding:16, backgroundColor:"white", borderRadius:14, borderWidth:1, borderColor:"#e2e8f0"}}>
+                <View style={{width:40, height:40, borderRadius:12, backgroundColor:"#22c55e", justifyContent:"center", alignItems:"center"}}><Ionicons name="time" size={18} color="white"/></View>
+                <View><Text style={{fontWeight:"700"}}>Job History</Text><Text style={{fontSize:11, color:"#64748b"}}>{completedJobs.length + awaitingPaymentJobs.length} completed • KES {totalEarnings.toLocaleString()} earned</Text></View>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={()=>{ setShowMenu(false); fetchJobs(); fetchReceipts(); }} style={{flexDirection:"row", alignItems:"center", gap:14, padding:16, backgroundColor:"white", borderRadius:14, borderWidth:1, borderColor:"#e2e8f0"}}>
                 <View style={{width:40, height:40, borderRadius:12, backgroundColor:"#0ABAB5", justifyContent:"center", alignItems:"center"}}><Ionicons name="refresh" size={18} color="white"/></View>
                 <Text style={{fontWeight:"700"}}>Refresh Jobs</Text>
               </TouchableOpacity>
@@ -825,6 +946,7 @@ export default function PlumberApp() {
               <View style={{flexDirection:"row", justifyContent:"space-between", paddingVertical:8}}><Text style={{color:"#64748b", fontSize:13}}>Version</Text><Text style={{fontWeight:"700", fontSize:13}}>RapidFundi 1.0.0</Text></View>
               <View style={{flexDirection:"row", justifyContent:"space-between", paddingVertical:8}}><Text style={{color:"#64748b", fontSize:13}}>Live</Text><Text style={{fontWeight:"700", fontSize:13}}>{isLive ? "● Connected" : "○ Connecting"} • {lastUpdate}</Text></View>
               <View style={{flexDirection:"row", justifyContent:"space-between", paddingVertical:8}}><Text style={{color:"#64748b", fontSize:13}}>GPS</Text><Text style={{fontWeight:"700", fontSize:11}}>{gps ? `${Number(gps.latitude).toFixed(4)}, ${Number(gps.longitude).toFixed(4)}` : "No GPS"}</Text></View>
+              <View style={{flexDirection:"row", justifyContent:"space-between", paddingVertical:8}}><Text style={{color:"#64748b", fontSize:13}}>Job History</Text><Text style={{fontWeight:"700", fontSize:13}}>{completedJobs.length} jobs • KES {totalEarnings.toLocaleString()}</Text></View>
             </View>
 
             <TouchableOpacity onPress={handleLogout} style={{backgroundColor:"#ef4444", padding:18, borderRadius:14, alignItems:"center", flexDirection:"row", justifyContent:"center", gap:8, marginTop:10}}>
