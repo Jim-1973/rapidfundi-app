@@ -1,61 +1,43 @@
 import { View, Text, TouchableOpacity, Alert } from "react-native";
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import { ReceiptData, ReceiptRole } from "../lib/receipts";
+import { ReceiptData, ReceiptRole, generateReceiptHTML, generatePlumberPayoutHTML } from "../../lib/receipts";
+import { Ionicons } from "@expo/vector-icons";
 
 const getHtml = (r: ReceiptData, role: ReceiptRole) => {
-  const date = new Date(r.created_at || Date.now()).toLocaleString();
+  const date = new Date(r.created_at || Date.now()).toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
   const isPlumber = role === 'plumber';
 
   if(isPlumber){
-    const statusLabel = r.status === 'PAID' ? 'PAID' : 'PENDING - End of Day Payout';
-    const statusColor = r.status === 'PAID' ? '#dcfce7' : '#fef3c7';
-    return `
-    <html><body style="font-family: sans-serif; padding: 30px; color: #0A1931">
-      <div style="text-align:center; border-bottom: 3px solid #0A1931; padding-bottom: 20px">
-        <h1 style="margin:0">🔧 RapidFundi</h1>
-        <p style="color:#0ABAB5; font-weight:700">Plumber Payout Receipt</p>
-        <p style="background:${statusColor}; display:inline-block; padding:6px 14px; border-radius:20px; font-size:12px; font-weight:800">${statusLabel}</p>
-      </div>
-      <div style="margin-top:20px">
-        <p><strong>Receipt No:</strong> ${r.receipt_number}</p>
-        <p><strong>Date:</strong> ${date}</p>
-        <p><strong>Job No:</strong> ${r.job_number}</p>
-        <p><strong>Location:</strong> ${r.building_name || ''} ${r.estate || ''}</p>
-      </div>
-      <div style="background:#f0fdfa; padding:20px; border-radius:12px; margin-top:20px; border:1px solid #0ABAB5">
-        <p>Labour Charge: KES ${r.labour.toLocaleString()}</p>
-        <h2 style="color:#0A1931">Your Payout (50%): KES ${r.plumber_share.toLocaleString()}</h2>
-        <p style="font-size:12px; color:#64748b">${r.status === 'PAID' ? 'Paid - Check M-Pesa' : 'You will be paid at end of day'}</p>
-      </div>
-      <p style="text-align:center; margin-top:40px; color:#94a3b8; font-size:11px">Thank you for working with RapidFundi</p>
-    </body></html>`;
+    return generatePlumberPayoutHTML({
+      receiptNumber: r.receipt_number,
+      jobNumber: r.job_number,
+      date,
+      plumberName: (r as any).plumbers?.name || '',
+      building: r.building_name || (r as any).jobs?.building_name || '',
+      estate: r.estate || (r as any).jobs?.estate || '',
+      category: (r as any).category || 'Plumbing',
+      labour: r.labour,
+      plumber_share: r.plumber_share,
+      total: r.total,
+      status: r.status,
+    });
   }
 
-  // Customer & Admin
-  const isAdmin = role === 'admin';
-  return `
-  <html><body style="font-family: sans-serif; padding: 30px; color: #0A1931">
-    <div style="text-align:center; border-bottom: 3px solid #0A1931; padding-bottom: 20px">
-      <h1 style="margin:0">🔧 RapidFundi</h1>
-      <p style="color:#64748b">Professional Plumbing Services</p>
-      <p style="background:${r.status==='PAID' ? '#dcfce7' : '#fef3c7'}; display:inline-block; padding:6px 14px; border-radius:20px; font-size:12px; font-weight:800">${r.status} - ${r.type}</p>
-    </div>
-    <div style="margin-top:20px">
-      <p><strong>Receipt No:</strong> ${r.receipt_number}</p>
-      <p><strong>Job No:</strong> ${r.job_number}</p>
-      <p><strong>Date:</strong> ${date}</p>
-      <p><strong>Location:</strong> ${r.building_name || ''}, ${r.estate || ''}</p>
-      <p><strong>Materials:</strong> ${r.materials_list || '-'}</p>
-    </div>
-    <table style="width:100%; margin-top:20px; border-collapse:collapse">
-      <tr style="background:#f8fafc"><td style="padding:12px; border:1px solid #e2e8f0">Labour</td><td style="padding:12px; border:1px solid #e2e8f0; text-align:right">KES ${r.labour.toLocaleString()}</td></tr>
-      <tr><td style="padding:12px; border:1px solid #e2e8f0">Materials</td><td style="padding:12px; border:1px solid #e2e8f0; text-align:right">KES ${r.materials_cost.toLocaleString()}</td></tr>
-      <tr style="background:#0A1931; color:white; font-weight:900"><td style="padding:14px">TOTAL</td><td style="padding:14px; text-align:right">KES ${r.total.toLocaleString()}</td></tr>
-      ${isAdmin ? `<tr style="background:#fef3c7"><td style="padding:10px; border:1px solid #e2e8f0">Plumber Share 50% (ADMIN ONLY)</td><td style="padding:10px; border:1px solid #e2e8f0; text-align:right">KES ${r.plumber_share.toLocaleString()}</td></tr>` : ''}
-    </table>
-    <p style="text-align:center; margin-top:40px; color:#94a3b8; font-size:11px">RapidFundi - Paid after completion</p>
-  </body></html>`;
+  // Customer & Admin - professional
+  return generateReceiptHTML({
+    receiptNumber: r.receipt_number,
+    jobNumber: r.job_number,
+    date,
+    building: r.building_name || (r as any).jobs?.building_name || '',
+    estate: r.estate || (r as any).jobs?.estate || '',
+    category: (r as any).category || 'Plumbing',
+    labour: r.labour,
+    materials_cost: r.materials_cost,
+    materials_list: r.materials_list,
+    total: r.total,
+    amount: r.total,
+  });
 };
 
 export default function ReceiptView({ receipt, role = 'customer' }: { receipt: ReceiptData, role: ReceiptRole }) {
@@ -64,44 +46,68 @@ export default function ReceiptView({ receipt, role = 'customer' }: { receipt: R
       const html = getHtml(receipt, role);
       const { uri } = await Print.printToFileAsync({ html });
       if(await Sharing.isAvailableAsync()){
-        await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: receipt.receipt_number });
       } else {
         await Print.printAsync({ html });
       }
     }catch(e:any){ Alert.alert("Failed", e.message); }
   };
 
-  return (
-    <View style={{ backgroundColor:"white", borderRadius:16, padding:16, borderWidth:1, borderColor:"#e2e8f0" }}>
-      <View style={{ flexDirection:"row", justifyContent:"space-between" }}>
-        <Text style={{ fontWeight:"900", fontSize:16 }}>🔧 RapidFundi</Text>
-        <Text style={{ backgroundColor: receipt.status==='PAID' ? "#dcfce7" : receipt.status==='UNPAID' ? "#fef3c7" : "#fef3c7", paddingHorizontal:10, paddingVertical:4, borderRadius:12, fontSize:10, fontWeight:"800" }}>
-          {receipt.status === 'UNPAID' && receipt.type === 'PLUMBER_PAYOUT' ? '⏳ PENDING' : receipt.status}
-        </Text>
-      </View>
-      <Text style={{ fontSize:12, color:"#64748b", marginTop:8 }}>{receipt.receipt_number} • {receipt.job_number}</Text>
-      
-      {role === 'plumber' ? (
-        <>
-          <Text style={{ marginTop:12, fontSize:13 }}>Labour: KES {receipt.labour.toLocaleString()}</Text>
-          <Text style={{ fontWeight:"900", fontSize:18, marginTop:6, color:"#0A1931" }}>Your Payout: KES {receipt.plumber_share.toLocaleString()} (50%)</Text>
-          <Text style={{ fontSize:11, color: receipt.status==='PAID' ? "#16a34a" : "#d97706", marginTop:4, fontWeight:"700" }}>
-            {receipt.status==='PAID' ? '✅ Paid - Check M-Pesa' : '⏳ To be paid end of day'}
-          </Text>
-        </>
-      ) : (
-        <>
-          <Text style={{ marginTop:12, fontSize:12 }}>{receipt.materials_list}</Text>
-          <View style={{ flexDirection:"row", justifyContent:"space-between", marginTop:12 }}><Text>Labour</Text><Text>KES {receipt.labour.toLocaleString()}</Text></View>
-          <View style={{ flexDirection:"row", justifyContent:"space-between", marginTop:6 }}><Text>Materials</Text><Text>KES {receipt.materials_cost.toLocaleString()}</Text></View>
-          <View style={{ flexDirection:"row", justifyContent:"space-between", marginTop:10, borderTopWidth:1, borderColor:"#f1f5f9", paddingTop:10 }}><Text style={{fontWeight:"900"}}>TOTAL</Text><Text style={{fontWeight:"900"}}>KES {receipt.total.toLocaleString()}</Text></View>
-          {role==='admin' && <Text style={{ marginTop:8, fontSize:11, color:"#d97706" }}>Plumber: KES {receipt.plumber_share.toLocaleString()} • Yours: KES {(receipt.labour - receipt.plumber_share).toLocaleString()}</Text>}
-        </>
-      )}
+  const isPlumber = role === 'plumber';
+  const payout = receipt.plumber_share;
+  const labour = receipt.labour;
 
-      <TouchableOpacity onPress={print} style={{ backgroundColor:"#0A1931", padding:12, borderRadius:10, marginTop:14 }}>
-        <Text style={{ color:"white", textAlign:"center", fontWeight:"800", fontSize:12 }}>📄 Print / Share PDF</Text>
-      </TouchableOpacity>
+  return (
+    <View style={{ backgroundColor:"white", borderRadius:20, borderWidth:1, borderColor:"#e2e8f0", overflow:"hidden" }}>
+      {/* HEADER */}
+      <View style={{ backgroundColor:"#0A1931", padding:16, flexDirection:"row", justifyContent:"space-between", alignItems:"center" }}>
+        <View>
+          <Text style={{ color:"white", fontWeight:"900", fontSize:18 }}>RapidFundi</Text>
+          <Text style={{ color:"#94a3b8", fontSize:10, marginTop:2 }}>{isPlumber ? "PLUMBER PAYMENT CLAIM" : "Professional Plumbing Services"}</Text>
+        </View>
+        <View style={{ backgroundColor: receipt.status==='PAID' ? "#22c55e" : "#f59e0b", paddingHorizontal:12, paddingVertical:6, borderRadius:20 }}>
+          <Text style={{ color:"white", fontSize:10, fontWeight:"900" }}>{receipt.status==='UNPAID' && isPlumber ? '⏳ UNPAID CLAIM' : receipt.status}</Text>
+        </View>
+      </View>
+
+      {/* META */}
+      <View style={{ padding:16 }}>
+        <View style={{ flexDirection:"row", justifyContent:"space-between" }}>
+          <View><Text style={{ fontSize:11, color:"#94a3b8" }}>Receipt No</Text><Text style={{ fontSize:12, fontWeight:"800", marginTop:2 }}>{receipt.receipt_number}</Text></View>
+          <View style={{ alignItems:"flex-end" }}><Text style={{ fontSize:11, color:"#94a3b8" }}>Job No</Text><Text style={{ fontSize:12, fontWeight:"800", marginTop:2 }}>{receipt.job_number}</Text></View>
+        </View>
+
+        <View style={{ backgroundColor:"#f8fafc", borderRadius:12, padding:12, marginTop:14, borderWidth:1, borderColor:"#e2e8f0" }}>
+          <Text style={{ fontSize:10, fontWeight:"800", color:"#94a3b8", letterSpacing:1 }}>JOB DETAILS</Text>
+          <Text style={{ fontSize:12, marginTop:6 }} numberOfLines={1}>{receipt.building_name || (receipt as any).jobs?.building_name || ''} • {receipt.estate || (receipt as any).jobs?.estate || ''}</Text>
+          {receipt.materials_list ? <Text style={{ fontSize:11, color:"#475569", marginTop:4 }} numberOfLines={2}>Materials: {receipt.materials_list}</Text> : null}
+        </View>
+
+        {isPlumber ? (
+          <View style={{ backgroundColor:"#f0fdfa", borderRadius:14, padding:14, marginTop:14, borderWidth:1, borderColor:"#99f6e0" }}>
+            <Text style={{ fontSize:10, fontWeight:"900", letterSpacing:1, color:"#0A1931" }}>EARNINGS - 50% OF LABOUR</Text>
+            <View style={{ marginTop:10, gap:6 }}>
+              <View style={{ flexDirection:"row", justifyContent:"space-between" }}><Text style={{ fontSize:12, color:"#475569" }}>Labour Charged</Text><Text style={{ fontSize:12, fontWeight:"700" }}>KES {labour.toLocaleString()}</Text></View>
+              <View style={{ flexDirection:"row", justifyContent:"space-between" }}><Text style={{ fontSize:12, color:"#475569" }}>Company Cut (50%)</Text><Text style={{ fontSize:12 }}>KES {(labour - payout).toLocaleString()}</Text></View>
+              <View style={{ flexDirection:"row", justifyContent:"space-between", borderTopWidth:1, borderTopColor:"#0A1931", paddingTop:8, marginTop:4 }}><Text style={{ fontWeight:"900", fontSize:13 }}>YOUR PAYOUT</Text><Text style={{ fontWeight:"900", fontSize:18, color:"#0A1931" }}>KES {payout.toLocaleString()}</Text></View>
+            </View>
+            <View style={{ backgroundColor: receipt.status==='PAID' ? "#dcfce7" : "#fef3c7", padding:10, borderRadius:10, marginTop:12, alignItems:"center" }}>
+              <Text style={{ fontWeight:"800", fontSize:12, color: receipt.status==='PAID' ? "#166534" : "#92400e" }}>{receipt.status==='PAID' ? '✅ Paid - Check M-Pesa' : '⏳ Unpaid - Claim for payout end of day'}</Text>
+            </View>
+            <Text style={{ fontSize:10, color:"#64748b", marginTop:8, textAlign:"center" }}>This document is a valid claim for payment. Present to admin with ID.</Text>
+          </View>
+        ) : (
+          <View style={{ marginTop:14, gap:8 }}>
+            <View style={{ flexDirection:"row", justifyContent:"space-between" }}><Text style={{ fontSize:12, color:"#64748b" }}>Labour</Text><Text style={{ fontSize:12, fontWeight:"700" }}>KES {receipt.labour.toLocaleString()}</Text></View>
+            <View style={{ flexDirection:"row", justifyContent:"space-between" }}><Text style={{ fontSize:12, color:"#64748b" }}>Materials</Text><Text style={{ fontSize:12, fontWeight:"700" }}>KES {receipt.materials_cost.toLocaleString()}</Text></View>
+            <View style={{ flexDirection:"row", justifyContent:"space-between", backgroundColor:"#0A1931", padding:12, borderRadius:10, marginTop:4 }}><Text style={{ color:"white", fontWeight:"900" }}>TOTAL PAID</Text><Text style={{ color:"white", fontWeight:"900" }}>KES {receipt.total.toLocaleString()}</Text></View>
+          </View>
+        )}
+
+        <TouchableOpacity onPress={print} style={{ backgroundColor:"#0A1931", padding:14, borderRadius:12, marginTop:16, flexDirection:"row", justifyContent:"center", alignItems:"center", gap:8 }}>
+          <Ionicons name="download" size={16} color="white"/><Text style={{ color:"white", fontWeight:"900", fontSize:12 }}>{isPlumber ? 'Download Claim PDF' : 'Download Receipt PDF'}</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
